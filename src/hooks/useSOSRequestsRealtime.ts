@@ -121,12 +121,15 @@ export function useSOSRequestsRealtime(
   // Handle realtime DELETE (cancellation)
   const handleDelete = useCallback((payload: RealtimePostgresChangesPayload<any>) => {
     console.log('❌ SOS CANCELLED - Realtime DELETE:', payload.old)
-    
-    setSOSRequests(prev => prev.filter(sos => sos.id !== payload.old.id))
-    
-    // Call custom callback
-    if (onDelete) {
-      onDelete(payload.old.id)
+
+    const deletedId = (payload.old as any)?.id
+    if (deletedId) {
+      setSOSRequests(prev => prev.filter(sos => sos.id !== deletedId))
+
+      // Call custom callback
+      if (onDelete) {
+        onDelete(deletedId)
+      }
     }
   }, [onDelete])
 
@@ -184,8 +187,11 @@ export function useSOSRequestsRealtime(
         },
         (payload: RealtimePostgresChangesPayload<any>) => {
           console.log('❌ SOS CANCELLED - Realtime DELETE:', payload.old)
-          setSOSRequests(prev => prev.filter(sos => sos.id !== payload.old.id))
-          if (onDelete) onDelete(payload.old.id)
+          const deletedId = (payload.old as any)?.id
+          if (deletedId) {
+            setSOSRequests(prev => prev.filter(sos => sos.id !== deletedId))
+            if (onDelete) onDelete(deletedId)
+          }
         }
       )
       .subscribe((status) => {

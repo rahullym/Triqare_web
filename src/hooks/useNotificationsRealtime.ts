@@ -126,8 +126,11 @@ export function useNotificationsRealtime(
         },
         (payload: RealtimePostgresChangesPayload<any>) => {
           console.log('🗑️ NOTIFICATION DELETED - Realtime DELETE:', payload.old)
-          setNotifications(prev => prev.filter(notif => notif.id !== payload.old.id))
-          if (onDelete) onDelete(payload.old.id)
+          const deletedId = (payload.old as any)?.id
+          if (deletedId) {
+            setNotifications(prev => prev.filter(notif => notif.id !== deletedId))
+            if (onDelete) onDelete(deletedId)
+          }
         }
       )
       .subscribe((status) => {

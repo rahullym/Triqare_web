@@ -101,13 +101,16 @@ export function useDriversRealtime(
   // Handle realtime DELETE
   const handleDelete = useCallback((payload: RealtimePostgresChangesPayload<any>) => {
     console.log('🔴 Realtime DELETE:', payload.old)
-    
-    setDrivers(prev => prev.filter(driver => driver.user_id !== payload.old.user_id))
-    setCount(prev => Math.max(0, prev - 1))
-    
-    // Call custom callback
-    if (onDelete) {
-      onDelete(payload.old.user_id)
+
+    const deletedUserId = (payload.old as any)?.user_id
+    if (deletedUserId) {
+      setDrivers(prev => prev.filter(driver => driver.user_id !== deletedUserId))
+      setCount(prev => Math.max(0, prev - 1))
+
+      // Call custom callback
+      if (onDelete) {
+        onDelete(deletedUserId)
+      }
     }
   }, [onDelete])
 
@@ -164,9 +167,12 @@ export function useDriversRealtime(
         },
         (payload: RealtimePostgresChangesPayload<any>) => {
           console.log('🔴 Realtime DELETE:', payload.old)
-          setDrivers(prev => prev.filter(driver => driver.user_id !== payload.old.user_id))
-          setCount(prev => Math.max(0, prev - 1))
-          if (onDelete) onDelete(payload.old.user_id)
+          const deletedUserId = (payload.old as any)?.user_id
+          if (deletedUserId) {
+            setDrivers(prev => prev.filter(driver => driver.user_id !== deletedUserId))
+            setCount(prev => Math.max(0, prev - 1))
+            if (onDelete) onDelete(deletedUserId)
+          }
         }
       )
       .subscribe((status) => {
