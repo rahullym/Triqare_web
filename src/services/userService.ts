@@ -1,6 +1,11 @@
 import { supabase, DatabaseUser, CreateUserInput, UpdateUserInput } from '@/lib/supabase'
 import { randomUUID } from 'crypto'
 import { AutoSyncService } from './autoSyncService'
+import { createClerkClient } from '@clerk/nextjs/server'
+
+const clerkClient = createClerkClient({
+  secretKey: process.env.CLERK_SECRET_KEY,
+})
 
 export class UserService {
   // Create a new user with automatic sync
@@ -206,22 +211,54 @@ export class UserService {
     }
   }
 
-  // Delete a user
+  // Delete a user (deletes from both Clerk and Supabase)
   static async deleteUser(id: string): Promise<{ success: boolean; error: string | null }> {
     try {
-      const { error } = await supabase
+      console.log('🗑️ Deleting user:', id)
+
+      // First, get the user to find their clerk_user_id
+      const { data: user, error: fetchError } = await supabase
+        .from('users')
+        .select('id, clerk_user_id, email, full_name')
+        .eq('id', id)
+        .single()
+
+      if (fetchError || !user) {
+        console.error('Error fetching user for deletion:', fetchError)
+        return { success: false, error: 'User not found' }
+      }
+
+      console.log(`Found user to delete: ${user.email} (Clerk ID: ${user.clerk_user_id})`)
+
+      // Delete from Clerk first
+      if (user.clerk_user_id) {
+        try {
+          await clerkClient.users.deleteUser(user.clerk_user_id)
+          console.log(`✅ Deleted user from Clerk: ${user.clerk_user_id}`)
+        } catch (clerkError: any) {
+          console.error('⚠️ Error deleting from Clerk:', clerkError)
+          // Continue even if Clerk deletion fails (user might not exist in Clerk)
+          // This is intentional - we still want to delete from database
+        }
+      } else {
+        console.log('⚠️ User has no Clerk ID, skipping Clerk deletion')
+      }
+
+      // Delete from database (CASCADE will handle related records)
+      const { error: deleteError } = await supabase
         .from('users')
         .delete()
         .eq('id', id)
 
-      if (error) {
-        console.error('Error deleting user:', error)
-        return { success: false, error: error.message }
+      if (deleteError) {
+        console.error('❌ Error deleting from database:', deleteError)
+        return { success: false, error: deleteError.message }
       }
 
+      console.log(`✅ Successfully deleted user: ${user.email}`)
       return { success: true, error: null }
     } catch (err) {
-      console.error('Unexpected error deleting user:', err)
+      console.error('❌ Unexpected error deleting user:', err)
       return { success: false, error: 'Failed to delete user' }
     }
   }

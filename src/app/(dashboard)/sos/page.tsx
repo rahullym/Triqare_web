@@ -17,6 +17,7 @@ import {
 import { SOSService, type SOSRequest } from '@/services/sosService'
 import { formatDateTime, getSeverityColor, getStatusColor } from '@/lib/utils'
 import { toast } from 'sonner'
+import { useSOSRequestsRealtime } from '@/hooks/useSOSRequestsRealtime'
 import {
   Search,
   Plus,
@@ -34,26 +35,25 @@ import {
 
 export default function SOSPage() {
   const [searchTerm, setSearchTerm] = useState('')
-  const [sosCases, setSOSCases] = useState<SOSRequest[]>([])
   const [patients, setPatients] = useState<any[]>([])
   const [isCreatingTestSOS, setIsCreatingTestSOS] = useState(false)
-  const [loading, setLoading] = useState(true)
 
-  // Load SOS cases and patients
+  // Use realtime hook for SOS requests
+  const { sosRequests: sosCases, loading, error: sosError, refetch, isConnected } = useSOSRequestsRealtime({
+    enabled: true,
+    playAlertSound: true,
+    onInsert: (sos) => {
+      toast.error(`🚨 NEW EMERGENCY!`, {
+        duration: 10000,
+        description: `Emergency from ${sos.patient?.full_name || 'Unknown Patient'}`
+      })
+    }
+  })
+
+  // Load patients for test SOS creation
   useEffect(() => {
-    const loadData = async () => {
+    const loadPatients = async () => {
       try {
-        setLoading(true)
-
-        // Load SOS cases
-        const sosResult = await SOSService.getSOSRequests()
-        if (sosResult.error) {
-          toast.error(`Failed to load SOS cases: ${sosResult.error}`)
-        } else {
-          setSOSCases(sosResult.data || [])
-        }
-
-        // Load patients for test SOS creation
         const response = await fetch('/api/sos/patients')
         const result = await response.json()
 
@@ -63,14 +63,11 @@ export default function SOSPage() {
           console.error('Failed to load patients:', result.error)
         }
       } catch (error) {
-        console.error('Error loading data:', error)
-        toast.error('Failed to load data')
-      } finally {
-        setLoading(false)
+        console.error('Error loading patients:', error)
       }
     }
 
-    loadData()
+    loadPatients()
   }, [])
 
   // Create test SOS request
@@ -102,8 +99,8 @@ export default function SOSPage() {
 
       if (response.ok) {
         toast.success(`Test SOS request created for ${randomPatient.full_name}!`)
-        // Refresh the page to show the new SOS request
-        window.location.reload()
+        // Realtime hook will automatically update the UI
+        refetch()
       } else {
         toast.error(result.error || 'Failed to create test SOS request')
       }
@@ -131,7 +128,22 @@ export default function SOSPage() {
     <div className="p-6 space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-3xl font-bold text-gray-900">SOS Emergency Dashboard</h1>
+          <div className="flex items-center gap-3">
+            <h1 className="text-3xl font-bold text-gray-900">SOS Emergency Dashboard</h1>
+            {/* Realtime Connection Status */}
+            {isConnected && (
+              <Badge variant="default" className="bg-green-100 text-green-800">
+                <div className="w-2 h-2 bg-green-500 rounded-full mr-2 animate-pulse" />
+                Live
+              </Badge>
+            )}
+            {!isConnected && !loading && (
+              <Badge variant="secondary" className="bg-red-100 text-red-600">
+                <div className="w-2 h-2 bg-red-400 rounded-full mr-2" />
+                Offline
+              </Badge>
+            )}
+          </div>
           <p className="text-gray-600">Monitor and respond to emergency situations</p>
         </div>
         <div className="flex space-x-2">

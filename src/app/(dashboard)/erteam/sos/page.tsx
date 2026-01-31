@@ -33,15 +33,32 @@ import {
 } from 'lucide-react'
 import { SOSService, type SOSRequest, type Patient, type Driver } from '@/services/sosService'
 import { toast } from 'sonner'
+import { useSOSRequestsRealtime } from '@/hooks/useSOSRequestsRealtime'
 
 export default function ERTSOSPage() {
   const [activeTab, setActiveTab] = useState('all')
   const [searchQuery, setSearchQuery] = useState('')
-  const [sosRequests, setSOSRequests] = useState<SOSRequest[]>([])
   const [patients, setPatients] = useState<Patient[]>([])
   const [drivers, setDrivers] = useState<Driver[]>([])
-  const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
+
+  // Use realtime hook for SOS requests
+  const { sosRequests, loading, error: sosError, refetch, isConnected } = useSOSRequestsRealtime({
+    enabled: true,
+    playAlertSound: true,
+    onInsert: (sos) => {
+      toast.error(`🚨 NEW EMERGENCY from ${sos.patient?.full_name || 'Unknown Patient'}!`, {
+        duration: 10000,
+        action: {
+          label: 'View',
+          onClick: () => setActiveTab('SOS Triggered')
+        }
+      })
+    },
+    onUpdate: (sos) => {
+      toast.info(`SOS request status updated to ${sos.status}`)
+    }
+  })
 
   // Pagination states
   const [currentPage, setCurrentPage] = useState(1)
@@ -58,21 +75,13 @@ export default function ERTSOSPage() {
   const [selectedStatus, setSelectedStatus] = useState<SOSRequest['status']>('SOS Triggered')
   const [deleteLoading, setDeleteLoading] = useState(false)
 
-  // Load all data
+  // Load patients and drivers (SOS requests come from realtime hook)
   const loadData = async () => {
     try {
-      setLoading(true)
-      const [sosResult, patientsResult, driversResult] = await Promise.all([
-        SOSService.getSOSRequests(),
+      const [patientsResult, driversResult] = await Promise.all([
         SOSService.getPatients(),
         SOSService.getAvailableDrivers() // Only load available drivers
       ])
-
-      if (sosResult.error) {
-        toast.error(`Failed to load SOS requests: ${sosResult.error}`)
-      } else {
-        setSOSRequests(sosResult.data || [])
-      }
 
       if (patientsResult.error) {
         toast.error(`Failed to load patients: ${patientsResult.error}`)
@@ -89,15 +98,16 @@ export default function ERTSOSPage() {
       }
     } catch (error) {
       toast.error('Failed to load data')
-    } finally {
-      setLoading(false)
     }
   }
 
   // Refresh data
   const refreshData = async () => {
     setRefreshing(true)
-    await loadData()
+    await Promise.all([
+      loadData(), // Load patients and drivers
+      refetch() // Refetch SOS requests from realtime hook
+    ])
     setRefreshing(false)
     toast.success('Data refreshed')
   }
@@ -593,9 +603,24 @@ export default function ERTSOSPage() {
         {/* Header */}
         <div className="flex items-center justify-between">
           <div>
-            <h1 className="text-3xl font-bold text-gray-900">
-              🚨 SOS Management System
-            </h1>
+            <div className="flex items-center gap-3">
+              <h1 className="text-3xl font-bold text-gray-900">
+                🚨 SOS Management System
+              </h1>
+              {/* Realtime Connection Status */}
+              {isConnected && (
+                <Badge variant="default" className="bg-green-100 text-green-800">
+                  <div className="w-2 h-2 bg-green-500 rounded-full mr-2 animate-pulse" />
+                  Live
+                </Badge>
+              )}
+              {!isConnected && !loading && (
+                <Badge variant="secondary" className="bg-red-100 text-red-600">
+                  <div className="w-2 h-2 bg-red-400 rounded-full mr-2" />
+                  Offline
+                </Badge>
+              )}
+            </div>
             <p className="text-gray-600">
               Monitor and manage emergency response requests
             </p>
@@ -969,18 +994,18 @@ export default function ERTSOSPage() {
               </DialogTitle>
               <DialogDescription>
                 Are you sure you want to delete this SOS request? This action cannot be undone.
-                {selectedSOS && (
-                  <div className="mt-3 p-3 bg-gray-50 rounded-lg">
-                    <div className="text-sm">
-                      <div><strong>ID:</strong> {selectedSOS.id.slice(0, 8)}...</div>
-                      <div><strong>Patient:</strong> {selectedSOS.patient?.full_name || 'Unknown'}</div>
-                      <div><strong>Status:</strong> {selectedSOS.status}</div>
-                      <div><strong>Requested:</strong> {formatTimestamp(selectedSOS.requested_at)}</div>
-                    </div>
-                  </div>
-                )}
               </DialogDescription>
             </DialogHeader>
+            {selectedSOS && (
+              <div className="mt-3 p-3 bg-gray-50 rounded-lg">
+                <div className="text-sm">
+                  <div><strong>ID:</strong> {selectedSOS.id.slice(0, 8)}...</div>
+                  <div><strong>Patient:</strong> {selectedSOS.patient?.full_name || 'Unknown'}</div>
+                  <div><strong>Status:</strong> {selectedSOS.status}</div>
+                  <div><strong>Requested:</strong> {formatTimestamp(selectedSOS.requested_at)}</div>
+                </div>
+              </div>
+            )}
             <DialogFooter>
               <Button
                 variant="outline"

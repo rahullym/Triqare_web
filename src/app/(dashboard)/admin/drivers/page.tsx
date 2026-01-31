@@ -35,6 +35,7 @@ import {
 } from 'lucide-react'
 import Link from 'next/link'
 import { useDrivers, useDeleteDriver, useDriverStats } from '@/hooks/useDrivers'
+import { useDriversRealtime } from '@/hooks/useDriversRealtime'
 import { useTransportCompanies } from '@/hooks/useTransportCompanies'
 import { useCountries, useStates, useCities } from '@/hooks/useLocations'
 import { useServerPagination } from '@/hooks/useServerPagination'
@@ -88,7 +89,13 @@ export default function DriversPage() {
     offset: (currentPage - 1) * pageSize
   }), [searchQuery, statusFilter, companyFilter, verificationFilter, countryFilter, stateFilter, cityFilter, currentPage, pageSize])
 
-  const { drivers, loading, error, count, refetch } = useDrivers(filters)
+  // Use realtime hook for live updates
+  const { drivers, loading, error, count, refetch, isConnected } = useDriversRealtime(filters, {
+    enabled: true,
+    onUpdate: (driver) => {
+      toast.info(`Driver ${driver.user?.full_name || 'record'} was updated`)
+    }
+  })
   const { stats, loading: statsLoading } = useDriverStats()
   const { deleteDriver, loading: deleteLoading } = useDeleteDriver()
 
@@ -332,7 +339,22 @@ export default function DriversPage() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">Drivers</h1>
+          <div className="flex items-center gap-3">
+            <h1 className="text-2xl font-bold text-gray-900">Drivers</h1>
+            {/* Realtime Connection Status */}
+            {isConnected && (
+              <Badge variant="default" className="bg-green-100 text-green-800">
+                <div className="w-2 h-2 bg-green-500 rounded-full mr-2 animate-pulse" />
+                Live
+              </Badge>
+            )}
+            {!isConnected && !loading && (
+              <Badge variant="secondary" className="bg-gray-100 text-gray-600">
+                <div className="w-2 h-2 bg-gray-400 rounded-full mr-2" />
+                Offline
+              </Badge>
+            )}
+          </div>
           <p className="text-gray-600">Manage drivers and their status</p>
         </div>
         <div className="flex gap-2">

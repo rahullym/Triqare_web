@@ -5,11 +5,11 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { 
-  Bell, 
-  AlertTriangle, 
-  Info, 
-  CheckCircle, 
+import {
+  Bell,
+  AlertTriangle,
+  Info,
+  CheckCircle,
   Clock,
   Settings,
   Check,
@@ -21,91 +21,25 @@ import {
   Users,
   Truck
 } from 'lucide-react'
-
-interface Notification {
-  id: string
-  type: 'emergency' | 'system' | 'assignment' | 'maintenance' | 'info'
-  priority: 'high' | 'medium' | 'low'
-  title: string
-  message: string
-  timestamp: string
-  read: boolean
-  actionRequired: boolean
-  source: string
-}
+import { useNotificationsRealtime } from '@/hooks/useNotificationsRealtime'
+import { NotificationService, type Notification } from '@/services/notificationService'
+import { toast } from 'sonner'
+import { formatDistanceToNow } from 'date-fns'
 
 export default function ERTNotificationsPage() {
   const [filter, setFilter] = useState('all')
   const [priorityFilter, setPriorityFilter] = useState('all')
 
-  const [notifications, setNotifications] = useState<Notification[]>([
-    {
-      id: '1',
-      type: 'emergency',
-      priority: 'high',
-      title: 'New Emergency Alert',
-      message: 'Cardiac emergency reported at 123 Main St. Immediate response required.',
-      timestamp: '2 minutes ago',
-      read: false,
-      actionRequired: true,
-      source: 'Emergency Dispatch'
-    },
-    {
-      id: '2',
-      type: 'assignment',
-      priority: 'medium',
-      title: 'Driver Assignment Update',
-      message: 'Mike Johnson has been assigned to AMB-001 for the next shift.',
-      timestamp: '15 minutes ago',
-      read: false,
-      actionRequired: false,
-      source: 'Fleet Management'
-    },
-    {
-      id: '3',
-      type: 'system',
-      priority: 'low',
-      title: 'System Maintenance Complete',
-      message: 'Scheduled maintenance on communication systems has been completed successfully.',
-      timestamp: '1 hour ago',
-      read: true,
-      actionRequired: false,
-      source: 'System Admin'
-    },
-    {
-      id: '4',
-      type: 'maintenance',
-      priority: 'medium',
-      title: 'Vehicle Maintenance Due',
-      message: 'AMB-003 is due for scheduled maintenance. Please schedule service appointment.',
-      timestamp: '2 hours ago',
-      read: false,
-      actionRequired: true,
-      source: 'Fleet Management'
-    },
-    {
-      id: '5',
-      type: 'info',
-      priority: 'low',
-      title: 'Training Session Reminder',
-      message: 'Monthly emergency response training scheduled for tomorrow at 10:00 AM.',
-      timestamp: '3 hours ago',
-      read: true,
-      actionRequired: false,
-      source: 'Training Department'
-    },
-    {
-      id: '6',
-      type: 'emergency',
-      priority: 'high',
-      title: 'Multi-Vehicle Accident',
-      message: 'Major accident on Highway 101. Multiple units dispatched. Coordinate with fire department.',
-      timestamp: '4 hours ago',
-      read: true,
-      actionRequired: false,
-      source: 'Emergency Dispatch'
+  // Use realtime hook for notifications
+  const { notifications: allNotifications, loading, error, refetch, isConnected } = useNotificationsRealtime({}, {
+    enabled: true,
+    playAlertSound: true,
+    onInsert: (notification) => {
+      toast.info(`New ${notification.type} notification`, {
+        description: notification.title
+      })
     }
-  ])
+  })
 
   const getTypeIcon = (type: string) => {
     switch (type) {
@@ -154,52 +88,88 @@ export default function ERTNotificationsPage() {
     }
   }
 
-  const markAsRead = (id: string) => {
-    setNotifications(prev =>
-      prev.map(notification =>
-        notification.id === id ? { ...notification, read: true } : notification
-      )
-    )
+  const markAsRead = async (id: string) => {
+    const { error } = await NotificationService.markAsRead(id)
+    if (error) {
+      toast.error('Failed to mark as read')
+    } else {
+      refetch()
+    }
   }
 
-  const markAllAsRead = () => {
-    setNotifications(prev =>
-      prev.map(notification => ({ ...notification, read: true }))
-    )
+  const markAllAsRead = async () => {
+    const { error } = await NotificationService.markAllAsRead()
+    if (error) {
+      toast.error('Failed to mark all as read')
+    } else {
+      toast.success('All notifications marked as read')
+      refetch()
+    }
   }
 
-  const deleteNotification = (id: string) => {
-    setNotifications(prev => prev.filter(notification => notification.id !== id))
+  const deleteNotification = async (id: string) => {
+    const { error } = await NotificationService.deleteNotification(id)
+    if (error) {
+      toast.error('Failed to delete notification')
+    } else {
+      refetch()
+    }
   }
 
-  const filteredNotifications = notifications.filter(notification => {
+  const filteredNotifications = allNotifications.filter(notification => {
     const matchesType = filter === 'all' || notification.type === filter
     const matchesPriority = priorityFilter === 'all' || notification.priority === priorityFilter
     return matchesType && matchesPriority
   })
 
-  const unreadCount = notifications.filter(n => !n.read).length
-  const highPriorityCount = notifications.filter(n => n.priority === 'high' && !n.read).length
-  const actionRequiredCount = notifications.filter(n => n.actionRequired && !n.read).length
+  const unreadCount = allNotifications.filter(n => !n.read).length
+  const highPriorityCount = allNotifications.filter(n => (n.priority === 'high' || n.priority === 'critical') && !n.read).length
+  const actionRequiredCount = allNotifications.filter(n => n.action_required && !n.read).length
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-96">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-gray-900 mx-auto mb-4"></div>
+          <p className="text-gray-600">Loading notifications...</p>
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div className="space-y-6">
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900 flex items-center">
-            <Bell className="h-6 w-6 mr-2" />
-            Notifications
-            {unreadCount > 0 && (
-              <Badge className="ml-2 bg-red-100 text-red-800">
-                {unreadCount} unread
+          <div className="flex items-center gap-3">
+            <h1 className="text-2xl font-bold text-gray-900 flex items-center">
+              <Bell className="h-6 w-6 mr-2" />
+              Notifications
+              {unreadCount > 0 && (
+                <Badge className="ml-2 bg-red-100 text-red-800">
+                  {unreadCount} unread
+                </Badge>
+              )}
+            </h1>
+            {/* Realtime Connection Status */}
+            {isConnected && (
+              <Badge variant="default" className="bg-green-100 text-green-800">
+                <div className="w-2 h-2 bg-green-500 rounded-full mr-2 animate-pulse" />
+                Live
               </Badge>
             )}
-          </h1>
+            {!isConnected && !loading && (
+              <Badge variant="secondary" className="bg-red-100 text-red-600">
+                <div className="w-2 h-2 bg-red-400 rounded-full mr-2" />
+                Offline
+              </Badge>
+            )}
+          </div>
           <p className="text-gray-600">Stay updated with system alerts and important messages</p>
         </div>
         <div className="flex space-x-2">
-          <Button variant="outline" onClick={markAllAsRead}>
+          <Button variant="outline" onClick={markAllAsRead} disabled={unreadCount === 0}>
             <CheckCircle className="h-4 w-4 mr-2" />
             Mark All Read
           </Button>
@@ -217,7 +187,7 @@ export default function ERTNotificationsPage() {
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-sm font-medium text-gray-600">Total</p>
-                <p className="text-2xl font-bold text-gray-900">{notifications.length}</p>
+                <p className="text-2xl font-bold text-gray-900">{allNotifications.length}</p>
               </div>
               <Bell className="h-8 w-8 text-gray-600" />
             </div>
@@ -319,7 +289,7 @@ export default function ERTNotificationsPage() {
                       <Badge className={getPriorityColor(notification.priority)}>
                         {notification.priority}
                       </Badge>
-                      {notification.actionRequired && (
+                      {notification.action_required && (
                         <Badge className="bg-orange-100 text-orange-800">
                           <Zap className="h-3 w-3 mr-1" />
                           Action Required
@@ -339,11 +309,11 @@ export default function ERTNotificationsPage() {
                     <div className="flex items-center space-x-4 text-xs text-gray-500">
                       <div className="flex items-center">
                         <Clock className="h-3 w-3 mr-1" />
-                        {notification.timestamp}
+                        {formatDistanceToNow(new Date(notification.created_at), { addSuffix: true })}
                       </div>
                       <div className="flex items-center">
                         <MessageSquare className="h-3 w-3 mr-1" />
-                        {notification.source}
+                        {notification.source || 'System'}
                       </div>
                     </div>
                   </div>
