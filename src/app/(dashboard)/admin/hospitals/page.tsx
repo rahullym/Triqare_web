@@ -8,9 +8,10 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { PaginationWithInfo } from '@/components/ui/pagination'
+import { Progress } from '@/components/ui/progress'
 import { useServerPagination } from '@/hooks/useServerPagination'
 import { useHospitals, useHospitalStats } from '@/hooks/useHospitals'
-import { useAllLocations } from '@/hooks/useLocations'
+import { useAllLocations, useCountries, useStates } from '@/hooks/useLocations'
 import { toast } from 'sonner'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import {
@@ -60,7 +61,15 @@ export default function AdminHospitalsPage() {
   // Google scraping state
   const [scrapeDialogOpen, setScrapeDialogOpen] = useState(false)
   const [scraping, setScraping] = useState(false)
-  const [scrapeResult, setScrapeResult] = useState<{ success: number; failed: number; skipped: number; errors: string[] } | null>(null)
+  const [scrapeResult, setScrapeResult] = useState<{ success: number; failed: number; skipped: number; errors: string[]; total?: number } | null>(null)
+  const [scrapeCountry, setScrapeCountry] = useState('')
+  const [scrapeState, setScrapeState] = useState('')
+  const [scrapeMaxResults, setScrapeMaxResults] = useState(60)
+  const [scrapeProgress, setScrapeProgress] = useState(0)
+  const [scrapeMessage, setScrapeMessage] = useState('')
+  const [scrapeCurrentHospital, setScrapeCurrentHospital] = useState('')
+  const [scrapeProcessed, setScrapeProcessed] = useState(0)
+  const [scrapeTotal, setScrapeTotal] = useState(0)
 
   // Pagination state
   const { currentPage, pageSize, setCurrentPage, setPageSize } = useServerPagination()
@@ -87,6 +96,10 @@ export default function AdminHospitalsPage() {
 
   // Use location data for filters
   const { cities, pincodes, loading: locationsLoading } = useAllLocations()
+
+  // Use location data for scraping
+  const { countries, loading: countriesLoading } = useCountries()
+  const { states, loading: statesLoading } = useStates(scrapeCountry)
 
   // Helper functions to get location names
   const getCityName = (cityId: string) => {
@@ -235,36 +248,111 @@ export default function AdminHospitalsPage() {
     URL.revokeObjectURL(url)
   }
 
-  // Scrape hospitals from Google Places API
+  // Scrape hospitals from Google Places API with streaming progress
   const handleScrapeGoogle = async () => {
+    // Validation
+    if (!scrapeCountry || !scrapeState) {
+      toast.error('Please select both country and state')
+      return
+    }
+
     setScraping(true)
     setScrapeResult(null)
+    setScrapeProgress(0)
+    setScrapeMessage('Initializing...')
+    setScrapeCurrentHospital('')
+    setScrapeProcessed(0)
+    setScrapeTotal(0)
 
     try {
+      // Get country and state names
+      const country = countries.find(c => c.id === scrapeCountry)
+      const state = states.find(s => s.id === scrapeState)
+
+      if (!country || !state) {
+        toast.error('Invalid country or state selection')
+        setScraping(false)
+        return
+      }
+
+      const location = `${state.name}, ${country.name}`
+
       const response = await fetch('/api/hospitals/scrape-google', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          location: 'Kerala, India',
+          location,
+          countryId: scrapeCountry,
+          stateId: scrapeState,
           radius: 50000,
-          maxResults: 60
+          maxResults: scrapeMaxResults
         })
       })
 
-      const result = await response.json()
-
-      if (response.ok && result.success) {
-        setScrapeResult(result.results)
-        toast.success(result.message)
-        refetch() // Refresh the hospitals list
-      } else {
-        toast.error(result.error || 'Failed to scrape hospitals')
-        setScrapeResult({ success: 0, failed: 0, skipped: 0, errors: [result.error] })
+      if (!response.ok) {
+        throw new Error('Failed to start scraping')
       }
+
+      // Read the streaming response
+      const reader = response.body?.getReader()
+      const decoder = new TextDecoder()
+
+      if (!reader) {
+        throw new Error('No response body')
+      }
+
+      let buffer = ''
+
+      while (true) {
+        const { done, value } = await reader.read()
+
+        if (done) break
+
+        buffer += decoder.decode(value, { stream: true })
+        const lines = buffer.split('\n\n')
+        buffer = lines.pop() || ''
+
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            try {
+              const data = JSON.parse(line.slice(6))
+
+              // Update progress based on event type
+              if (data.type === 'progress') {
+                setScrapeProgress(data.progress || 0)
+                setScrapeMessage(data.message || '')
+                if (data.current) setScrapeProcessed(data.current)
+                if (data.total) setScrapeTotal(data.total)
+                if (data.hospitalName) setScrapeCurrentHospital(data.hospitalName)
+              } else if (data.type === 'success') {
+                // Hospital successfully imported
+                console.log('✅', data.message)
+              } else if (data.type === 'skip') {
+                // Hospital skipped
+                console.log('⏭️', data.message)
+              } else if (data.type === 'error') {
+                // Error processing hospital
+                console.error('❌', data.message)
+              } else if (data.type === 'complete') {
+                // Scraping complete
+                setScrapeProgress(100)
+                setScrapeMessage(data.message)
+                setScrapeResult(data.results)
+                toast.success(data.message)
+                refetch() // Refresh the hospitals list
+              }
+            } catch (e) {
+              console.error('Error parsing SSE data:', e)
+            }
+          }
+        }
+      }
+
     } catch (error) {
-      toast.error('Failed to connect to Google API')
+      console.error('Scraping error:', error)
+      toast.error('Failed to scrape hospitals')
       setScrapeResult({ success: 0, failed: 0, skipped: 0, errors: ['Network error'] })
     } finally {
       setScraping(false)
@@ -275,6 +363,14 @@ export default function AdminHospitalsPage() {
   const handleScrapeDialogClose = () => {
     setScrapeDialogOpen(false)
     setScrapeResult(null)
+    setScrapeCountry('')
+    setScrapeState('')
+    setScrapeMaxResults(60)
+    setScrapeProgress(0)
+    setScrapeMessage('')
+    setScrapeCurrentHospital('')
+    setScrapeProcessed(0)
+    setScrapeTotal(0)
   }
 
   return (
@@ -756,22 +852,112 @@ export default function AdminHospitalsPage() {
                 Scrape Hospitals from Google Places
               </DialogTitle>
               <DialogDescription>
-                Automatically fetch hospital data from Google Places API for Kerala, India.
+                Automatically fetch hospital data from Google Places API for your selected location.
               </DialogDescription>
             </DialogHeader>
 
             <div className="space-y-4 py-4">
+              {/* Location Selection */}
+              {!scrapeResult && (
+                <div className="space-y-4">
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <Label htmlFor="scrape-country">Country *</Label>
+                      <Select
+                        value={scrapeCountry}
+                        onValueChange={setScrapeCountry}
+                        disabled={scraping || countriesLoading}
+                      >
+                        <SelectTrigger>
+                          <SelectValue placeholder={countriesLoading ? "Loading..." : "Select country"} />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {countries.map((country) => (
+                            <SelectItem key={country.id} value={country.id}>
+                              {country.name}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+
+                    <div>
+                      <Label htmlFor="scrape-state">State *</Label>
+                      <Select
+                        value={scrapeState}
+                        onValueChange={setScrapeState}
+                        disabled={scraping || statesLoading || !scrapeCountry}
+                      >
+                        <SelectTrigger>
+                          <SelectValue placeholder={
+                            !scrapeCountry ? "Select country first" :
+                            statesLoading ? "Loading..." :
+                            "Select state"
+                          } />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {states.map((state) => (
+                            <SelectItem key={state.id} value={state.id}>
+                              {state.name}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </div>
+
+                  <div>
+                    <Label htmlFor="scrape-max-results">Maximum Results</Label>
+                    <Input
+                      id="scrape-max-results"
+                      type="number"
+                      min="10"
+                      max="200"
+                      value={scrapeMaxResults}
+                      onChange={(e) => setScrapeMaxResults(parseInt(e.target.value) || 60)}
+                      disabled={scraping}
+                      placeholder="60"
+                    />
+                    <p className="text-xs text-gray-500 mt-1">Number of hospitals to fetch (10-200)</p>
+                  </div>
+                </div>
+              )}
+
+              {/* Progress Bar */}
+              {scraping && (
+                <div className="space-y-3 p-4 bg-blue-50 rounded-lg border border-blue-200">
+                  <div className="flex items-center justify-between">
+                    <h4 className="font-medium text-blue-900">Scraping in Progress...</h4>
+                    <span className="text-sm font-medium text-blue-700">{scrapeProgress}%</span>
+                  </div>
+                  <Progress value={scrapeProgress} className="h-2" />
+                  <div className="space-y-1">
+                    <p className="text-sm text-blue-800">{scrapeMessage}</p>
+                    {scrapeCurrentHospital && (
+                      <p className="text-xs text-blue-600">Current: {scrapeCurrentHospital}</p>
+                    )}
+                    {scrapeTotal > 0 && (
+                      <p className="text-xs text-blue-600">
+                        Processed: {scrapeProcessed} / {scrapeTotal}
+                      </p>
+                    )}
+                  </div>
+                </div>
+              )}
+
               {/* Info Box */}
-              <div className="p-4 bg-green-50 rounded-lg border border-green-200">
-                <h4 className="font-medium text-green-900 mb-2">What will happen:</h4>
-                <ul className="text-sm text-green-800 space-y-1 list-disc list-inside">
-                  <li>Search for hospitals in Kerala, India using Google Places API</li>
-                  <li>Fetch up to 60 hospital records with details</li>
-                  <li>Automatically populate: name, address, phone, location, hours</li>
-                  <li>Skip hospitals that already exist in the database</li>
-                  <li>Process may take 1-2 minutes to complete</li>
-                </ul>
-              </div>
+              {!scraping && !scrapeResult && (
+                <div className="p-4 bg-green-50 rounded-lg border border-green-200">
+                  <h4 className="font-medium text-green-900 mb-2">What will happen:</h4>
+                  <ul className="text-sm text-green-800 space-y-1 list-disc list-inside">
+                    <li>Search for hospitals in selected location using Google Places API</li>
+                    <li>Fetch hospital records with details (name, address, phone, location, hours)</li>
+                    <li>Automatically populate: name, address, phone, location, hours</li>
+                    <li>Skip hospitals that already exist in the database</li>
+                    <li>Process may take 1-2 minutes to complete</li>
+                  </ul>
+                </div>
+              )}
 
               {/* Scrape Result */}
               {scrapeResult && (
