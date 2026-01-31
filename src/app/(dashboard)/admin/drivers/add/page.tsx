@@ -89,6 +89,7 @@ export default function AddDriverPage() {
         transport_company_id: formData.transport_company_id,
         license_number: formData.license_number,
         aadhar_number: formData.aadhar_number,
+        is_verified: formData.is_verified,
         status: formData.status,
         country_id: formData.country_id || undefined,
         state_id: formData.state_id || undefined,

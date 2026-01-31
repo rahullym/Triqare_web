@@ -49,6 +49,7 @@ export interface CreateDriverData {
   transport_company_id: string
   license_number: string
   aadhar_number?: string
+  is_verified?: boolean
   status: 'available' | 'assigned' | 'on_trip' | 'inactive'
   latitude?: number
   longitude?: number

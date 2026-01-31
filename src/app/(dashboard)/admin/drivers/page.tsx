@@ -61,6 +61,9 @@ export default function DriversPage() {
   const [csvResult, setCsvResult] = useState<{ success: number; failed: number; errors: string[] } | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
+  // Quick action states
+  const [updatingDriverId, setUpdatingDriverId] = useState<string | null>(null)
+
   // Pagination
   const { currentPage, pageSize, setCurrentPage, setPageSize } = useServerPagination()
 
@@ -211,6 +214,65 @@ export default function DriversPage() {
     a.download = 'drivers_template.csv'
     a.click()
     URL.revokeObjectURL(url)
+  }
+
+  // Quick action handlers
+  const handleToggleVerification = async (driverId: string, currentStatus: boolean) => {
+    setUpdatingDriverId(driverId)
+    try {
+      const response = await fetch(`/api/drivers/${driverId}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          is_verified: !currentStatus
+        })
+      })
+
+      const data = await response.json()
+
+      if (!response.ok || !data.success) {
+        throw new Error(data.error || 'Failed to update verification status')
+      }
+
+      toast.success(`Driver ${!currentStatus ? 'verified' : 'unverified'} successfully`)
+      refetch()
+    } catch (error) {
+      console.error('Error updating verification:', error)
+      toast.error(error instanceof Error ? error.message : 'Failed to update verification status')
+    } finally {
+      setUpdatingDriverId(null)
+    }
+  }
+
+  const handleQuickStatusChange = async (driverId: string, newStatus: 'available' | 'assigned' | 'on_trip' | 'inactive') => {
+    setUpdatingDriverId(driverId)
+    try {
+      const response = await fetch(`/api/drivers/${driverId}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          status: newStatus
+        })
+      })
+
+      const data = await response.json()
+
+      if (!response.ok || !data.success) {
+        throw new Error(data.error || 'Failed to update status')
+      }
+
+      toast.success(`Driver status updated to ${newStatus}`)
+      refetch()
+    } catch (error) {
+      console.error('Error updating status:', error)
+      toast.error(error instanceof Error ? error.message : 'Failed to update status')
+    } finally {
+      setUpdatingDriverId(null)
+    }
   }
 
   // Get status badge
@@ -539,6 +601,60 @@ export default function DriversPage() {
                           Location: {driver.latitude.toFixed(6)}, {driver.longitude.toFixed(6)}
                         </div>
                       )}
+
+                      {/* Quick Actions */}
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        <Button
+                          variant={driver.is_verified ? "default" : "outline"}
+                          size="sm"
+                          onClick={() => handleToggleVerification(driver.user_id, driver.is_verified)}
+                          disabled={updatingDriverId === driver.user_id}
+                          className={driver.is_verified ? "bg-green-600 hover:bg-green-700" : "border-green-600 text-green-600 hover:bg-green-50"}
+                        >
+                          {updatingDriverId === driver.user_id ? (
+                            <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                          ) : driver.is_verified ? (
+                            <CheckCircle className="h-3 w-3 mr-1" />
+                          ) : (
+                            <XCircle className="h-3 w-3 mr-1" />
+                          )}
+                          {driver.is_verified ? 'Verified' : 'Verify'}
+                        </Button>
+
+                        {driver.status !== 'available' && (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => handleQuickStatusChange(driver.user_id, 'available')}
+                            disabled={updatingDriverId === driver.user_id}
+                            className="border-green-600 text-green-600 hover:bg-green-50"
+                          >
+                            {updatingDriverId === driver.user_id ? (
+                              <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                            ) : (
+                              <ShieldCheck className="h-3 w-3 mr-1" />
+                            )}
+                            Set Available
+                          </Button>
+                        )}
+
+                        {driver.status !== 'inactive' && (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => handleQuickStatusChange(driver.user_id, 'inactive')}
+                            disabled={updatingDriverId === driver.user_id}
+                            className="border-gray-600 text-gray-600 hover:bg-gray-50"
+                          >
+                            {updatingDriverId === driver.user_id ? (
+                              <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                            ) : (
+                              <Clock className="h-3 w-3 mr-1" />
+                            )}
+                            Set Inactive
+                          </Button>
+                        )}
+                      </div>
                     </div>
                     <div className="flex items-center space-x-2">
                       <Link href={`/admin/drivers/${driver.user_id}`}>

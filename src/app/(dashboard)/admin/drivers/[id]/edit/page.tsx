@@ -6,13 +6,14 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { Checkbox } from '@/components/ui/checkbox'
 
-import { 
-  Select, 
-  SelectContent, 
-  SelectItem, 
-  SelectTrigger, 
-  SelectValue 
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue
 } from '@/components/ui/select'
 import {
   Users,
@@ -29,7 +30,9 @@ interface FormData {
   phone_number: string
   email: string
   license_number: string
-  status: 'active' | 'inactive' | 'suspended'
+  aadhar_number: string
+  is_verified: boolean
+  status: 'available' | 'assigned' | 'on_trip' | 'inactive'
 }
 
 interface Driver {
@@ -41,7 +44,9 @@ interface Driver {
   phone_number: string
   email: string
   license_number: string
-  status: 'active' | 'inactive' | 'suspended'
+  aadhar_number: string
+  is_verified: boolean
+  status: 'available' | 'assigned' | 'on_trip' | 'inactive'
 }
 
 
@@ -57,7 +62,9 @@ export default function EditDriverPage({ params }: { params: Promise<{ id: strin
     phone_number: '',
     email: '',
     license_number: '',
-    status: 'active'
+    aadhar_number: '',
+    is_verified: false,
+    status: 'available'
   })
   const [errors, setErrors] = useState<Partial<FormData>>({})
 
@@ -81,8 +88,9 @@ export default function EditDriverPage({ params }: { params: Promise<{ id: strin
             phone_number: data.driver.user?.phone || 'No phone provided',
             email: data.driver.user?.email || 'No email provided',
             license_number: data.driver.license_number || 'No license number',
-
-            status: data.driver.status || 'active'
+            aadhar_number: data.driver.aadhar_number || '',
+            is_verified: data.driver.is_verified || false,
+            status: data.driver.status || 'available'
           }
 
           setDriver(transformedDriver)
@@ -91,6 +99,8 @@ export default function EditDriverPage({ params }: { params: Promise<{ id: strin
             phone_number: transformedDriver.phone_number,
             email: transformedDriver.email,
             license_number: transformedDriver.license_number,
+            aadhar_number: transformedDriver.aadhar_number,
+            is_verified: transformedDriver.is_verified,
             status: transformedDriver.status
           })
         } else {
@@ -106,7 +116,7 @@ export default function EditDriverPage({ params }: { params: Promise<{ id: strin
     fetchData()
   }, [resolvedParams.id])
 
-  const handleInputChange = (field: keyof FormData, value: string) => {
+  const handleInputChange = (field: keyof FormData, value: string | boolean) => {
     setFormData(prev => ({ ...prev, [field]: value }))
     // Clear error when user starts typing
     if (errors[field]) {
@@ -143,28 +153,39 @@ export default function EditDriverPage({ params }: { params: Promise<{ id: strin
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    
+
     if (!validateForm()) {
       return
     }
 
     setIsLoading(true)
-    
+
     try {
-      // In a real app, you would call your API here
-      const driverData = {
-        ...formData
+      const response = await fetch(`/api/drivers/${resolvedParams.id}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          license_number: formData.license_number,
+          aadhar_number: formData.aadhar_number,
+          is_verified: formData.is_verified,
+          status: formData.status
+        })
+      })
+
+      const data = await response.json()
+
+      if (!response.ok || !data.success) {
+        throw new Error(data.error || 'Failed to update driver')
       }
-      console.log('Updating driver:', driverData)
-      
-      // Simulate API call
-      await new Promise(resolve => setTimeout(resolve, 1000))
-      
+
       // Redirect to driver view page
       router.push(`/admin/drivers/${resolvedParams.id}`)
     } catch (error) {
       console.error('Error updating driver:', error)
       // Handle error (show toast, etc.)
+      alert(error instanceof Error ? error.message : 'Failed to update driver')
     } finally {
       setIsLoading(false)
     }
@@ -285,6 +306,20 @@ export default function EditDriverPage({ params }: { params: Promise<{ id: strin
                 )}
               </div>
 
+              {/* Aadhar Number */}
+              <div className="space-y-2">
+                <Label htmlFor="aadhar_number">
+                  Aadhar Number
+                </Label>
+                <Input
+                  id="aadhar_number"
+                  value={formData.aadhar_number}
+                  onChange={(e) => handleInputChange('aadhar_number', e.target.value)}
+                  placeholder="123456789012"
+                  maxLength={12}
+                />
+              </div>
+
               {/* Email */}
               <div className="space-y-2">
                 <Label htmlFor="email">
@@ -331,16 +366,29 @@ export default function EditDriverPage({ params }: { params: Promise<{ id: strin
                 <Label htmlFor="status">
                   Status <span className="text-red-500">*</span>
                 </Label>
-                <Select value={formData.status} onValueChange={(value: 'active' | 'inactive' | 'suspended') => handleInputChange('status', value)}>
+                <Select value={formData.status} onValueChange={(value: 'available' | 'assigned' | 'on_trip' | 'inactive') => handleInputChange('status', value)}>
                   <SelectTrigger>
                     <SelectValue placeholder="Select status" />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="active">Active</SelectItem>
+                    <SelectItem value="available">Available</SelectItem>
+                    <SelectItem value="assigned">Assigned</SelectItem>
+                    <SelectItem value="on_trip">On Trip</SelectItem>
                     <SelectItem value="inactive">Inactive</SelectItem>
-                    <SelectItem value="suspended">Suspended</SelectItem>
                   </SelectContent>
                 </Select>
+              </div>
+
+              {/* Verification Status */}
+              <div className="flex items-center space-x-2 pt-2">
+                <Checkbox
+                  id="is_verified"
+                  checked={formData.is_verified}
+                  onCheckedChange={(checked) => handleInputChange('is_verified', checked as boolean)}
+                />
+                <Label htmlFor="is_verified" className="cursor-pointer">
+                  Driver is verified
+                </Label>
               </div>
 
 
@@ -376,18 +424,35 @@ export default function EditDriverPage({ params }: { params: Promise<{ id: strin
         </Card>
 
         {/* Status Change Warning */}
-        {formData.status === 'suspended' && (
-          <Card className="border-red-200 bg-red-50">
+        {formData.status === 'on_trip' && (
+          <Card className="border-blue-200 bg-blue-50">
             <CardContent className="pt-6">
               <div className="flex items-start gap-3">
-                <div className="w-5 h-5 rounded-full bg-red-500 flex items-center justify-center flex-shrink-0 mt-0.5">
+                <div className="w-5 h-5 rounded-full bg-blue-500 flex items-center justify-center flex-shrink-0 mt-0.5">
+                  <span className="text-white text-xs font-bold">i</span>
+                </div>
+                <div>
+                  <h3 className="font-medium text-blue-900 mb-1">On Trip Status</h3>
+                  <p className="text-sm text-blue-800">
+                    This driver is currently on a trip. They will not receive new assignments until the trip is completed.
+                  </p>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
+        {formData.status === 'assigned' && (
+          <Card className="border-yellow-200 bg-yellow-50">
+            <CardContent className="pt-6">
+              <div className="flex items-start gap-3">
+                <div className="w-5 h-5 rounded-full bg-yellow-500 flex items-center justify-center flex-shrink-0 mt-0.5">
                   <span className="text-white text-xs font-bold">!</span>
                 </div>
                 <div>
-                  <h3 className="font-medium text-red-900 mb-1">Suspension Warning</h3>
-                  <p className="text-sm text-red-800">
-                    Suspending this driver will prevent them from receiving new assignments and may affect ongoing operations. 
-                    Existing assignments will remain active until completed.
+                  <h3 className="font-medium text-yellow-900 mb-1">Assigned Status</h3>
+                  <p className="text-sm text-yellow-800">
+                    This driver is currently assigned to an emergency. They will not receive new assignments until the current one is completed.
                   </p>
                 </div>
               </div>
