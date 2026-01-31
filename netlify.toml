@@ -7,6 +7,9 @@
 [build.environment]
   NODE_VERSION = "20"
   NPM_FLAGS = "--legacy-peer-deps"
+  # Tell Netlify to ignore public environment variables in secrets scanning
+  # These are intentionally public and safe to be in client bundles
+  SECRETS_SCAN_OMIT_KEYS = "NEXT_PUBLIC_SUPABASE_URL,NEXT_PUBLIC_SUPABASE_ANON_KEY,NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY,NEXT_PUBLIC_GOOGLE_MAPS_API_KEY"
 
 # Next.js Plugin Configuration
 [[plugins]]
