@@ -25,9 +25,11 @@ import {
   Ban,
   CheckCircle
 } from 'lucide-react'
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
 import { UserService } from '@/services/userService'
 import { DatabaseUser } from '@/lib/supabase'
+import { useUsersRealtime } from '@/hooks/useUsersRealtime'
+import { toast } from 'sonner'
 
 interface EnrichedUser extends DatabaseUser {
   banned?: boolean
@@ -36,16 +38,13 @@ interface EnrichedUser extends DatabaseUser {
 }
 
 export default function AdminUsersPage() {
-  const [users, setUsers] = useState<EnrichedUser[]>([])
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
+  const [enrichedUsers, setEnrichedUsers] = useState<EnrichedUser[]>([])
   const [searchQuery, setSearchQuery] = useState('')
   const [roleFilter, setRoleFilter] = useState<string>('')
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
   const [userToDelete, setUserToDelete] = useState<DatabaseUser | null>(null)
   const [deleteLoading, setDeleteLoading] = useState(false)
   const [toggleStatusLoading, setToggleStatusLoading] = useState<string | null>(null)
-  const [count, setCount] = useState(0)
   const [stats, setStats] = useState<{
     total: number
     byRole: Record<string, number>
@@ -55,6 +54,29 @@ export default function AdminUsersPage() {
   // Pagination state
   const { currentPage, pageSize, setCurrentPage, setPageSize } = useServerPagination()
 
+  // Memoize filters to prevent unnecessary re-subscriptions
+  const realtimeFilters = useMemo(() => ({
+    role: roleFilter || undefined,
+    search: searchQuery || undefined,
+    limit: pageSize,
+    offset: (currentPage - 1) * pageSize
+  }), [roleFilter, searchQuery, pageSize, currentPage])
+
+  // Use realtime hook for users
+  const { users, loading, error, refetch, isConnected, count } = useUsersRealtime({
+    enabled: true,
+    filters: realtimeFilters,
+    onInsert: (user) => {
+      toast.success(`New user added: ${user.full_name || user.email}`)
+    },
+    onUpdate: (user) => {
+      toast.info(`User updated: ${user.full_name || user.email}`)
+    },
+    onDelete: (userId) => {
+      toast.info('User deleted')
+    }
+  })
+
   // Pagination calculations
   const totalPages = Math.ceil(count / pageSize)
   const hasNextPage = currentPage < totalPages
@@ -62,9 +84,12 @@ export default function AdminUsersPage() {
   const startIndex = count > 0 ? (currentPage - 1) * pageSize + 1 : 0
   const endIndex = Math.min(currentPage * pageSize, count)
 
-  const loadUsers = useCallback(async () => {
-    setLoading(true)
-    setError(null)
+  // Enrich users with Clerk status (banned, lastSignInAt, etc.)
+  const enrichUsers = useCallback(async () => {
+    if (users.length === 0) {
+      setEnrichedUsers([])
+      return
+    }
 
     try {
       // Build query parameters
@@ -78,18 +103,18 @@ export default function AdminUsersPage() {
       const response = await fetch(`/api/admin/users/list-with-status?${params.toString()}`)
       const result = await response.json()
 
-      if (!response.ok) {
-        setError(result.error || 'Failed to load users')
+      if (response.ok && result.data) {
+        setEnrichedUsers(result.data)
       } else {
-        setUsers(result.data || [])
-        setCount(result.count || 0)
+        // Fallback to non-enriched users if API fails
+        setEnrichedUsers(users as EnrichedUser[])
       }
     } catch (err) {
-      setError('Failed to load users')
-    } finally {
-      setLoading(false)
+      console.error('Failed to enrich users:', err)
+      // Fallback to non-enriched users
+      setEnrichedUsers(users as EnrichedUser[])
     }
-  }, [roleFilter, searchQuery, pageSize, currentPage])
+  }, [users, roleFilter, searchQuery, pageSize, currentPage])
 
   const loadStats = useCallback(async () => {
     try {
@@ -104,18 +129,18 @@ export default function AdminUsersPage() {
     }
   }, [])
 
-  // Load users and stats
+  // Enrich users when base users change
   useEffect(() => {
-    loadUsers()
-  }, [loadUsers])
+    enrichUsers()
+  }, [enrichUsers])
 
+  // Load stats on mount
   useEffect(() => {
     loadStats()
   }, [loadStats])
 
   const handleSearch = () => {
     setCurrentPage(1) // Reset to first page on search
-    loadUsers()
   }
 
   const handleDeleteClick = (user: DatabaseUser) => {
@@ -130,14 +155,15 @@ export default function AdminUsersPage() {
     try {
       const { error } = await UserService.deleteUser(userToDelete.id)
       if (error) {
-        setError('Failed to delete user: ' + error)
+        toast.error('Failed to delete user: ' + error)
       } else {
-        loadUsers() // Reload the list
+        toast.success('User deleted successfully')
         setDeleteDialogOpen(false)
         setUserToDelete(null)
+        // Realtime hook will automatically update the list
       }
     } catch (err) {
-      setError('Failed to delete user')
+      toast.error('Failed to delete user')
     } finally {
       setDeleteLoading(false)
     }
@@ -165,13 +191,15 @@ export default function AdminUsersPage() {
       const result = await response.json()
 
       if (!response.ok) {
-        setError(result.error || 'Failed to update user status')
+        toast.error(result.error || 'Failed to update user status')
       } else {
-        // Reload users to reflect the change
-        loadUsers()
+        toast.success(`User ${action === 'ban' ? 'deactivated' : 'activated'} successfully`)
+        // Realtime hook will automatically update the list
+        // But we also manually enrich to get the latest Clerk status
+        enrichUsers()
       }
     } catch (err) {
-      setError('Failed to update user status')
+      toast.error('Failed to update user status')
     } finally {
       setToggleStatusLoading(null)
     }
@@ -213,9 +241,24 @@ export default function AdminUsersPage() {
         {/* Header */}
         <div className="flex items-center justify-between">
           <div>
-            <h1 className="text-3xl font-bold text-gray-900">
-              👥 User Management
-            </h1>
+            <div className="flex items-center gap-3">
+              <h1 className="text-3xl font-bold text-gray-900">
+                👥 User Management
+              </h1>
+              {/* Realtime Connection Status */}
+              {isConnected && (
+                <Badge variant="default" className="bg-green-100 text-green-800">
+                  <div className="w-2 h-2 bg-green-500 rounded-full mr-2 animate-pulse" />
+                  Live
+                </Badge>
+              )}
+              {!isConnected && !loading && (
+                <Badge variant="secondary" className="bg-red-100 text-red-600">
+                  <div className="w-2 h-2 bg-red-400 rounded-full mr-2" />
+                  Offline
+                </Badge>
+              )}
+            </div>
             <p className="text-gray-600">
               Manage system users, roles, and permissions
             </p>
@@ -354,13 +397,13 @@ export default function AdminUsersPage() {
                 <AlertCircle className="h-8 w-8 mr-2" />
                 <span>{error}</span>
               </div>
-            ) : users.length === 0 ? (
+            ) : enrichedUsers.length === 0 ? (
               <div className="text-center py-8 text-gray-500">
                 No users found
               </div>
             ) : (
               <div className="space-y-4">
-                {users.map((user) => (
+                {enrichedUsers.map((user) => (
                   <div key={user.id} className="flex items-center justify-between p-4 border rounded-lg hover:bg-gray-50">
                     <div className="flex items-center space-x-4">
                       <div className="w-12 h-12 bg-gradient-to-br from-blue-500 to-purple-600 rounded-full flex items-center justify-center text-white font-bold">

@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { useRouter } from 'next/navigation'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
@@ -20,139 +20,129 @@ import {
 } from 'lucide-react'
 import LiveTrackingMap, { MapMarker } from '@/components/maps/LiveTrackingMap'
 import { toast } from 'sonner'
+import { useERTDriversRealtime } from '@/hooks/useERTDriversRealtime'
 
-interface LocationData {
-  users: Array<{
-    id: string
-    full_name: string
-    email: string
-    role: string
-    phone?: string
-    is_active: boolean
-    latitude: number
-    longitude: number
-    status?: string
-    company_name?: string
-  }>
-  hospitals: Array<{
-    id: string
-    name: string
-    latitude: number
-    longitude: number
-    status: string
-    phone?: string
-  }>
+interface Hospital {
+  id: string
+  name: string
+  latitude: number
+  longitude: number
+  status: string
+  phone?: string
 }
 
 export default function ERTMapPage() {
   const router = useRouter()
-  const [locationData, setLocationData] = useState<LocationData | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [refreshing, setRefreshing] = useState(false)
-  const [autoRefresh, setAutoRefresh] = useState(true)
+  const [hospitals, setHospitals] = useState<Hospital[]>([])
+  const [loadingHospitals, setLoadingHospitals] = useState(true)
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null)
 
-  // Fetch location data
-  const fetchLocations = useCallback(async (isRefresh = false) => {
-    try {
-      if (isRefresh) setRefreshing(true)
-      else setLoading(true)
-
-      const response = await fetch('/api/users/locations')
-      const result = await response.json()
-
-      if (result.success) {
-        console.log('=== Location Data Received ===')
-        console.log('Users:', result.data.users?.length || 0)
-        console.log('Hospitals:', result.data.hospitals?.length || 0)
-        console.log('Sample user:', result.data.users?.[0])
-        setLocationData(result.data)
-        setLastUpdated(new Date())
-      } else {
-        console.error('API returned error:', result)
-        toast.error('Failed to load locations')
-      }
-    } catch (error) {
-      console.error('Error fetching locations:', error)
-      toast.error('Failed to fetch location data')
-    } finally {
-      setLoading(false)
-      setRefreshing(false)
+  // Use realtime hook for drivers with location tracking
+  const { drivers, loading: loadingDrivers, isConnected, refetch } = useERTDriversRealtime({
+    enabled: true,
+    filters: {},
+    onInsert: (driver) => {
+      toast.success('New driver added to map')
+      setLastUpdated(new Date())
+    },
+    onUpdate: (driver) => {
+      console.log('📍 Driver location updated:', driver)
+      setLastUpdated(new Date())
+    },
+    onDelete: (driverId) => {
+      toast.info('Driver removed from map')
+      setLastUpdated(new Date())
     }
+  })
+
+  // Fetch hospitals
+  useEffect(() => {
+    const fetchHospitals = async () => {
+      try {
+        setLoadingHospitals(true)
+        const response = await fetch('/api/hospitals?status=active')
+
+        if (!response.ok) {
+          console.error('Failed to fetch hospitals:', response.statusText)
+          return
+        }
+
+        const result = await response.json()
+
+        // API returns { hospitals: [...], count: number }
+        if (result.hospitals) {
+          console.log('🏥 Hospitals Loaded:', result.count || result.hospitals.length)
+          setHospitals(result.hospitals || [])
+        } else if (result.error) {
+          console.error('❌ Failed to load hospitals:', result.error)
+          toast.error('Failed to load hospitals')
+        }
+      } catch (error) {
+        console.error('💥 Error fetching hospitals:', error)
+        toast.error('Failed to fetch hospital data')
+      } finally {
+        setLoadingHospitals(false)
+      }
+    }
+
+    fetchHospitals()
   }, [])
 
-  // Initial fetch
-  useEffect(() => {
-    fetchLocations()
-  }, [fetchLocations])
+  // Convert real-time driver data and hospitals to map markers
+  const mapMarkers: MapMarker[] = useMemo(() => {
+    const markers: MapMarker[] = []
 
-  // Auto-refresh every 30 seconds
-  useEffect(() => {
-    if (!autoRefresh) return
-
-    const interval = setInterval(() => {
-      fetchLocations(true)
-    }, 30000)
-
-    return () => clearInterval(interval)
-  }, [autoRefresh, fetchLocations])
-
-  // Convert location data to map markers
-  const mapMarkers: MapMarker[] = [
-    // Driver/Patient markers
-    ...(locationData?.users || []).map(user => {
-      const marker = {
-        id: user.id,
-        lat: user.latitude,
-        lng: user.longitude,
-        type: (user.role === 'driver' ? 'driver' : 'patient') as MapMarker['type'],
-        name: user.full_name || 'Unknown',
-        status: user.status,
-        info: user.company_name ? `Company: ${user.company_name}` : undefined
+    // Add driver markers from real-time data
+    drivers.forEach(driver => {
+      if (driver.latitude && driver.longitude) {
+        markers.push({
+          id: driver.id,
+          lat: driver.latitude,
+          lng: driver.longitude,
+          type: 'driver' as const,
+          name: driver.full_name || 'Unknown Driver',
+          status: driver.status, // online, busy, offline
+          info: driver.transport_company?.company_name
+            ? `Company: ${driver.transport_company.company_name}`
+            : undefined
+        })
       }
-      return marker
-    }),
-    // Hospital markers
-    ...(locationData?.hospitals || []).map(hospital => ({
-      id: hospital.id,
-      lat: parseFloat(String(hospital.latitude)),
-      lng: parseFloat(String(hospital.longitude)),
-      type: 'hospital' as const,
-      name: hospital.name,
-      status: hospital.status,
-      info: hospital.phone ? `Phone: ${hospital.phone}` : undefined
-    }))
-  ]
+    })
 
-  // Debug log markers
-  console.log('=== Map Markers ===')
-  console.log('Total markers:', mapMarkers.length)
-  console.log('Driver markers:', mapMarkers.filter(m => m.type === 'driver').length)
-  console.log('Patient markers:', mapMarkers.filter(m => m.type === 'patient').length)
-  console.log('Hospital markers:', mapMarkers.filter(m => m.type === 'hospital').length)
-  if (mapMarkers.length > 0) {
-    console.log('First marker:', mapMarkers[0])
-  }
+    // Add hospital markers
+    hospitals.forEach(hospital => {
+      if (hospital.latitude && hospital.longitude) {
+        markers.push({
+          id: hospital.id,
+          lat: parseFloat(String(hospital.latitude)),
+          lng: parseFloat(String(hospital.longitude)),
+          type: 'hospital' as const,
+          name: hospital.name,
+          status: hospital.status,
+          info: hospital.phone ? `Phone: ${hospital.phone}` : undefined
+        })
+      }
+    })
+
+    console.log('🗺️ Map Markers Updated:', {
+      total: markers.length,
+      drivers: markers.filter(m => m.type === 'driver').length,
+      hospitals: markers.filter(m => m.type === 'hospital').length
+    })
+
+    return markers
+  }, [drivers, hospitals])
 
   // Summary counts
-  const counts = {
-    drivers: locationData?.users?.filter(u => u.role === 'driver').length || 0,
-    patients: locationData?.users?.filter(u => u.role === 'patient').length || 0,
-    hospitals: locationData?.hospitals?.length || 0,
+  const counts = useMemo(() => ({
+    drivers: drivers.length,
+    online: drivers.filter(d => d.status === 'online').length,
+    busy: drivers.filter(d => d.status === 'busy').length,
+    hospitals: hospitals.length,
     total: mapMarkers.length
-  }
+  }), [drivers, hospitals, mapMarkers])
 
-  const getStatusColor = (status: string) => {
-    switch (status) {
-      case 'available': return 'bg-green-100 text-green-800'
-      case 'assigned': return 'bg-blue-100 text-blue-800'
-      case 'on_trip': return 'bg-purple-100 text-purple-800'
-      case 'inactive': return 'bg-gray-100 text-gray-800'
-      case 'pending': return 'bg-yellow-100 text-yellow-800'
-      case 'in_progress': return 'bg-orange-100 text-orange-800'
-      default: return 'bg-gray-100 text-gray-800'
-    }
-  }
+  const loading = loadingDrivers || loadingHospitals
 
   return (
     <div className="p-6 space-y-6">
@@ -163,7 +153,7 @@ export default function ERTMapPage() {
               🗺️ Live Map View
             </h1>
             <p className="text-gray-600">
-              Real-time tracking of drivers, patients, and hospitals
+              Real-time tracking of drivers and hospitals
             </p>
             {lastUpdated && (
               <p className="text-xs text-gray-400 mt-1">
@@ -172,6 +162,16 @@ export default function ERTMapPage() {
             )}
           </div>
           <div className="flex items-center space-x-3">
+            {/* Real-time Connection Status */}
+            <Badge
+              className={isConnected
+                ? "bg-green-100 text-green-800"
+                : "bg-gray-100 text-gray-800"
+              }
+            >
+              <div className={`h-2 w-2 rounded-full mr-2 ${isConnected ? 'bg-green-500 animate-pulse' : 'bg-gray-400'}`} />
+              {isConnected ? 'Live' : 'Connecting...'}
+            </Badge>
             <Badge className="bg-blue-100 text-blue-800">
               <Activity className="h-3 w-3 mr-1" />
               ERT Access
@@ -179,23 +179,15 @@ export default function ERTMapPage() {
             <Button
               variant="outline"
               size="sm"
-              onClick={() => fetchLocations(true)}
-              disabled={refreshing}
+              onClick={() => refetch()}
+              disabled={loading}
             >
-              {refreshing ? (
+              {loading ? (
                 <Loader2 className="h-4 w-4 mr-2 animate-spin" />
               ) : (
                 <RefreshCw className="h-4 w-4 mr-2" />
               )}
               Refresh
-            </Button>
-            <Button
-              variant={autoRefresh ? "default" : "outline"}
-              size="sm"
-              onClick={() => setAutoRefresh(!autoRefresh)}
-            >
-              <Clock className="h-4 w-4 mr-2" />
-              Auto {autoRefresh ? 'On' : 'Off'}
             </Button>
             <Button onClick={() => router.push('/erteam/sos')}>
               <Zap className="h-4 w-4 mr-2" />
@@ -210,7 +202,7 @@ export default function ERTMapPage() {
             <CardContent className="pt-4">
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="text-sm text-gray-500">Drivers</p>
+                  <p className="text-sm text-gray-500">Total Drivers</p>
                   <p className="text-2xl font-bold text-green-600">{counts.drivers}</p>
                 </div>
                 <Truck className="h-8 w-8 text-green-500" />
@@ -221,10 +213,21 @@ export default function ERTMapPage() {
             <CardContent className="pt-4">
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="text-sm text-gray-500">Patients</p>
-                  <p className="text-2xl font-bold text-blue-600">{counts.patients}</p>
+                  <p className="text-sm text-gray-500">Online</p>
+                  <p className="text-2xl font-bold text-blue-600">{counts.online}</p>
                 </div>
-                <Users className="h-8 w-8 text-blue-500" />
+                <Activity className="h-8 w-8 text-blue-500" />
+              </div>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardContent className="pt-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm text-gray-500">Busy</p>
+                  <p className="text-2xl font-bold text-orange-600">{counts.busy}</p>
+                </div>
+                <Clock className="h-8 w-8 text-orange-500" />
               </div>
             </CardContent>
           </Card>
@@ -236,17 +239,6 @@ export default function ERTMapPage() {
                   <p className="text-2xl font-bold text-red-600">{counts.hospitals}</p>
                 </div>
                 <Building2 className="h-8 w-8 text-red-500" />
-              </div>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardContent className="pt-4">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-sm text-gray-500">Total Markers</p>
-                  <p className="text-2xl font-bold text-purple-600">{counts.total}</p>
-                </div>
-                <MapPin className="h-8 w-8 text-purple-500" />
               </div>
             </CardContent>
           </Card>
@@ -285,33 +277,37 @@ export default function ERTMapPage() {
 
           {/* Side Panel */}
           <div className="space-y-6">
-            {/* Patients */}
+            {/* Online Drivers */}
             <Card>
               <CardHeader>
                 <CardTitle className="flex items-center gap-2">
-                  <Users className="h-5 w-5 text-blue-500" />
-                  Patients ({locationData?.users?.filter(u => u.role === 'patient').length || 0})
+                  <Truck className="h-5 w-5 text-green-500" />
+                  Online Drivers ({counts.online})
                 </CardTitle>
               </CardHeader>
               <CardContent>
                 <div className="space-y-3 max-h-[200px] overflow-y-auto">
-                  {locationData?.users?.filter(u => u.role === 'patient').length === 0 ? (
-                    <p className="text-sm text-gray-500 text-center py-4">No patients with location data</p>
+                  {drivers.filter(d => d.status === 'online').length === 0 ? (
+                    <p className="text-sm text-gray-500 text-center py-4">No online drivers</p>
                   ) : (
-                    locationData?.users?.filter(u => u.role === 'patient').map((patient) => (
-                      <div key={patient.id} className="p-3 rounded-lg border border-blue-200 bg-blue-50">
+                    drivers.filter(d => d.status === 'online').map((driver) => (
+                      <div key={driver.id} className="p-3 border rounded-lg bg-green-50 border-green-200">
                         <div className="flex items-center justify-between mb-2">
-                          <span className="font-medium text-sm">{patient.full_name}</span>
-                          <Badge className="bg-blue-100 text-blue-800">Patient</Badge>
+                          <span className="font-medium text-sm">{driver.full_name}</span>
+                          <Badge className="bg-green-100 text-green-800">
+                            Online
+                          </Badge>
                         </div>
-                        {patient.phone && (
+                        {driver.transport_company?.company_name && (
                           <div className="text-xs text-gray-600 mb-1">
-                            📞 {patient.phone}
+                            🏢 {driver.transport_company.company_name}
                           </div>
                         )}
-                        <div className="text-xs text-gray-400">
-                          📍 {patient.latitude.toFixed(4)}, {patient.longitude.toFixed(4)}
-                        </div>
+                        {driver.latitude && driver.longitude && (
+                          <div className="text-xs text-gray-400">
+                            📍 {driver.latitude.toFixed(4)}, {driver.longitude.toFixed(4)}
+                          </div>
+                        )}
                       </div>
                     ))
                   )}
@@ -319,35 +315,37 @@ export default function ERTMapPage() {
               </CardContent>
             </Card>
 
-            {/* Active Drivers */}
+            {/* Busy Drivers */}
             <Card>
               <CardHeader>
                 <CardTitle className="flex items-center gap-2">
-                  <Truck className="h-5 w-5 text-green-500" />
-                  Active Drivers ({locationData?.users?.filter(u => u.role === 'driver').length || 0})
+                  <Activity className="h-5 w-5 text-orange-500" />
+                  Busy Drivers ({counts.busy})
                 </CardTitle>
               </CardHeader>
               <CardContent>
                 <div className="space-y-3 max-h-[200px] overflow-y-auto">
-                  {locationData?.users?.filter(u => u.role === 'driver').length === 0 ? (
-                    <p className="text-sm text-gray-500 text-center py-4">No drivers with location data</p>
+                  {drivers.filter(d => d.status === 'busy').length === 0 ? (
+                    <p className="text-sm text-gray-500 text-center py-4">No busy drivers</p>
                   ) : (
-                    locationData?.users?.filter(u => u.role === 'driver').map((driver) => (
-                      <div key={driver.id} className="p-3 border rounded-lg">
+                    drivers.filter(d => d.status === 'busy').map((driver) => (
+                      <div key={driver.id} className="p-3 border rounded-lg bg-orange-50 border-orange-200">
                         <div className="flex items-center justify-between mb-2">
                           <span className="font-medium text-sm">{driver.full_name}</span>
-                          <Badge className={getStatusColor(driver.status || 'available')}>
-                            {driver.status || 'available'}
+                          <Badge className="bg-orange-100 text-orange-800">
+                            Busy
                           </Badge>
                         </div>
-                        {driver.company_name && (
+                        {driver.transport_company?.company_name && (
                           <div className="text-xs text-gray-600 mb-1">
-                            Company: {driver.company_name}
+                            🏢 {driver.transport_company.company_name}
                           </div>
                         )}
-                        <div className="text-xs text-gray-400">
-                          📍 {driver.latitude.toFixed(4)}, {driver.longitude.toFixed(4)}
-                        </div>
+                        {driver.latitude && driver.longitude && (
+                          <div className="text-xs text-gray-400">
+                            📍 {driver.latitude.toFixed(4)}, {driver.longitude.toFixed(4)}
+                          </div>
+                        )}
                       </div>
                     ))
                   )}
@@ -360,15 +358,15 @@ export default function ERTMapPage() {
               <CardHeader>
                 <CardTitle className="flex items-center gap-2">
                   <Building2 className="h-5 w-5 text-red-500" />
-                  Hospitals ({locationData?.hospitals?.length || 0})
+                  Hospitals ({counts.hospitals})
                 </CardTitle>
               </CardHeader>
               <CardContent>
                 <div className="space-y-3 max-h-[200px] overflow-y-auto">
-                  {locationData?.hospitals?.length === 0 ? (
+                  {hospitals.length === 0 ? (
                     <p className="text-sm text-gray-500 text-center py-4">No hospitals with location data</p>
                   ) : (
-                    locationData?.hospitals?.map((hospital) => (
+                    hospitals.map((hospital) => (
                       <div key={hospital.id} className="p-3 border rounded-lg">
                         <div className="font-medium text-sm mb-1">{hospital.name}</div>
                         {hospital.phone && (

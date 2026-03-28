@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { useRouter } from 'next/navigation'
 import { RoleGuard } from '@/components/auth/RoleGuard'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -20,9 +20,14 @@ import {
   XCircle,
   Zap,
   Navigation,
-  Timer
+  Timer,
+  Wifi,
+  WifiOff
 } from 'lucide-react'
 import { toast } from 'sonner'
+import { useSOSRequestsRealtime } from '@/hooks/useSOSRequestsRealtime'
+import { useERTDriversRealtime } from '@/hooks/useERTDriversRealtime'
+import { SOSRequest } from '@/services/sosService'
 
 interface ERTDashboardStats {
   activeEmergencies: number
@@ -53,43 +58,138 @@ interface ERTDashboardStats {
 }
 
 export default function ERTDashboardPage() {
-  const [stats, setStats] = useState<ERTDashboardStats | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
   const router = useRouter()
+  const [lastUpdated, setLastUpdated] = useState<Date>(new Date())
 
-  useEffect(() => {
-    fetchDashboardStats()
-    // Set up polling for real-time updates
-    const interval = setInterval(fetchDashboardStats, 30000) // Update every 30 seconds
-    return () => clearInterval(interval)
-  }, [])
-
-  const fetchDashboardStats = async () => {
-    try {
-      setLoading(true)
-      const response = await fetch('/api/erteam/dashboard/stats')
-      const data = await response.json()
-
-      if (!response.ok) {
-        throw new Error(data.error || 'Failed to fetch dashboard stats')
-      }
-
-      if (data.success) {
-        setStats(data.stats)
-      } else {
-        throw new Error(data.error || 'Failed to fetch dashboard stats')
-      }
-    } catch (error) {
-      console.error('Error fetching ERT dashboard stats:', error)
-      setError(error instanceof Error ? error.message : 'Failed to load dashboard data')
-      if (loading) { // Only show toast on initial load, not on polling errors
-        toast.error('Failed to load dashboard data')
-      }
-    } finally {
-      setLoading(false)
+  // Use realtime hooks for SOS requests and drivers
+  const {
+    sosRequests,
+    loading: sosLoading,
+    error: sosError,
+    isConnected: sosConnected,
+    refetch: refetchSOS
+  } = useSOSRequestsRealtime({
+    enabled: true,
+    playAlertSound: true,
+    onInsert: (sos) => {
+      toast.error(`🚨 NEW EMERGENCY from ${sos.patient_name || 'Unknown Patient'}!`, {
+        duration: 10000,
+        action: {
+          label: 'View',
+          onClick: () => router.push(`/erteam/sos/${sos.id}`)
+        }
+      })
+      setLastUpdated(new Date())
+    },
+    onUpdate: (sos) => {
+      setLastUpdated(new Date())
     }
-  }
+  })
+
+  const {
+    drivers,
+    loading: driversLoading,
+    error: driversError,
+    isConnected: driversConnected
+  } = useERTDriversRealtime({
+    enabled: true,
+    onInsert: () => setLastUpdated(new Date()),
+    onUpdate: () => setLastUpdated(new Date())
+  })
+
+  // Calculate real-time statistics from the data
+  const stats = useMemo(() => {
+    if (!sosRequests || !drivers) return null
+
+    const now = new Date()
+    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+
+    // Active emergencies (not completed or cancelled)
+    const activeEmergencies = sosRequests.filter(sos =>
+      sos.status !== 'Arrived at Hospital' && sos.status !== 'Cancelled'
+    )
+
+    // Get driver IDs from active SOS requests
+    const activeSosDriverIds = new Set<string>()
+    activeEmergencies.forEach(sos => {
+      if (sos.assigned_driver?.id) {
+        activeSosDriverIds.add(sos.assigned_driver.id)
+      }
+    })
+
+    // Available drivers (not currently assigned to active SOS)
+    const availableDrivers = drivers.filter(driver =>
+      driver.driver_status === 'available' && !activeSosDriverIds.has(driver.id)
+    )
+
+    // On-duty drivers (available or currently on assignment)
+    const onDutyDrivers = drivers.filter(driver =>
+      driver.driver_status === 'available' || driver.driver_status === 'assigned' || driver.driver_status === 'on_trip'
+    )
+
+    // Completed today
+    const completedToday = sosRequests.filter(sos => {
+      if (sos.status !== 'Arrived at Hospital') return false
+      if (!sos.completed_at) return false
+      return new Date(sos.completed_at) >= todayStart
+    }).length
+
+    // Pending assignments (SOS triggered but no driver assigned)
+    const pendingAssignments = sosRequests.filter(sos =>
+      sos.status === 'SOS Triggered' && !sos.assigned_driver
+    ).length
+
+    // Calculate average response time (from requested to assigned)
+    const completedWithTimes = sosRequests.filter(sos =>
+      sos.status === 'Arrived at Hospital' && sos.assigned_at && sos.requested_at
+    )
+
+    let avgResponseTime = 'N/A'
+    if (completedWithTimes.length > 0) {
+      const totalMinutes = completedWithTimes.reduce((sum, sos) => {
+        const requested = new Date(sos.requested_at).getTime()
+        const assigned = new Date(sos.assigned_at!).getTime()
+        return sum + (assigned - requested) / 1000 / 60
+      }, 0)
+      const avgMinutes = Math.round(totalMinutes / completedWithTimes.length)
+      avgResponseTime = `${avgMinutes} min`
+    }
+
+    // Get active cases with full details
+    const activeCases = activeEmergencies.slice(0, 10).map(sos => ({
+      id: sos.id,
+      patient_name: sos.patient?.full_name || 'Unknown',
+      patient_phone: sos.patient?.phone || 'N/A',
+      location: sos.patient?.address_line || 'Unknown location',
+      severity: 'medium', // Default since we don't have severity in DB
+      status: sos.status,
+      created_at: sos.requested_at,
+      assigned_driver_id: sos.assigned_driver?.id || null,
+      drivers: sos.assigned_driver ? {
+        id: sos.assigned_driver.id,
+        first_name: sos.assigned_driver.full_name.split(' ')[0] || '',
+        last_name: sos.assigned_driver.full_name.split(' ').slice(1).join(' ') || '',
+        phone_number: sos.assigned_driver.phone || ''
+      } : undefined
+    }))
+
+    return {
+      activeEmergencies: activeEmergencies.length,
+      availableAmbulances: availableDrivers.length,
+      onDutyDrivers: onDutyDrivers.length,
+      avgResponseTime,
+      completedToday,
+      pendingAssignments,
+      criticalCases: 0, // Not available in current schema
+      highPriorityCases: 0, // Not available in current schema
+      activeCases,
+      totalDrivers: drivers.length
+    }
+  }, [sosRequests, drivers])
+
+  const loading = sosLoading || driversLoading
+  const error = sosError || driversError
+  const isConnected = sosConnected && driversConnected
 
   const getPriorityColor = (priority: string) => {
     switch (priority) {
@@ -129,7 +229,10 @@ export default function ERTDashboardPage() {
             <AlertTriangle className="h-12 w-12 text-red-500 mx-auto mb-4" />
             <h2 className="text-xl font-semibold text-gray-900 mb-2">Failed to Load Dashboard</h2>
             <p className="text-gray-600 mb-4">{error}</p>
-            <Button onClick={fetchDashboardStats}>
+            <Button onClick={() => {
+              refetchSOS()
+              setLastUpdated(new Date())
+            }}>
               Try Again
             </Button>
           </div>
@@ -147,8 +250,22 @@ export default function ERTDashboardPage() {
             <h1 className="text-3xl font-bold text-gray-900">
               🚨 ERT Command Center
             </h1>
-            <p className="text-gray-600">
+            <p className="text-gray-600 flex items-center gap-2">
               Emergency Response Team operational dashboard
+              {isConnected ? (
+                <Badge variant="outline" className="bg-green-50 text-green-700 border-green-200">
+                  <Wifi className="h-3 w-3 mr-1" />
+                  Live
+                </Badge>
+              ) : (
+                <Badge variant="outline" className="bg-red-50 text-red-700 border-red-200">
+                  <WifiOff className="h-3 w-3 mr-1" />
+                  Disconnected
+                </Badge>
+              )}
+              <span className="text-xs text-gray-500">
+                Updated: {lastUpdated.toLocaleTimeString()}
+              </span>
             </p>
           </div>
           <div className="flex items-center space-x-3">

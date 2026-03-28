@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect, useCallback } from 'react'
+import { useRouter } from 'next/navigation'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -70,6 +71,7 @@ interface Stats {
 }
 
 export default function AssignmentsPage() {
+  const router = useRouter()
   const [searchTerm, setSearchTerm] = useState('')
   const [statusFilter, setStatusFilter] = useState('all')
   const [priorityFilter, setPriorityFilter] = useState('all')
@@ -192,6 +194,23 @@ export default function AssignmentsPage() {
     if (diffHours < 24) return `${diffHours}h ago`
     const diffDays = Math.floor(diffHours / 24)
     return `${diffDays}d ago`
+  }
+
+  // Navigation handlers
+  const handleViewDetails = (assignmentId: string) => {
+    router.push(`/erteam/sos/${assignmentId}`)
+  }
+
+  const handleEditAssignment = (assignmentId: string) => {
+    router.push(`/erteam/sos/${assignmentId}/edit`)
+  }
+
+  const handleViewOnMap = (assignment: Assignment) => {
+    if (assignment.latitude && assignment.longitude) {
+      router.push(`/erteam/map?lat=${assignment.latitude}&lng=${assignment.longitude}&highlight=${assignment.id}`)
+    } else {
+      toast.error('Location coordinates not available')
+    }
   }
 
   // Loading state
@@ -447,14 +466,29 @@ export default function AssignmentsPage() {
                     </div>
 
                     <div className="flex space-x-2 ml-4">
-                      <Button variant="outline" size="sm" title="View Details">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        title="View Details"
+                        onClick={() => handleViewDetails(assignment.id)}
+                      >
                         <Eye className="h-4 w-4" />
                       </Button>
-                      <Button variant="outline" size="sm" title="Edit">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        title="Edit"
+                        onClick={() => handleEditAssignment(assignment.id)}
+                      >
                         <Edit className="h-4 w-4" />
                       </Button>
                       {assignment.latitude && assignment.longitude && (
-                        <Button variant="outline" size="sm" title="View on Map">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          title="View on Map"
+                          onClick={() => handleViewOnMap(assignment)}
+                        >
                           <MapPin className="h-4 w-4" />
                         </Button>
                       )}
@@ -520,10 +554,20 @@ export default function AssignmentsPage() {
                       </TableCell>
                       <TableCell className="text-right">
                         <div className="flex justify-end gap-1">
-                          <Button variant="ghost" size="sm" title="View Details">
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            title="View Details"
+                            onClick={() => handleViewDetails(assignment.id)}
+                          >
                             <Eye className="h-4 w-4" />
                           </Button>
-                          <Button variant="ghost" size="sm" title="Edit">
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            title="Edit"
+                            onClick={() => handleEditAssignment(assignment.id)}
+                          >
                             <Edit className="h-4 w-4" />
                           </Button>
                         </div>

@@ -114,80 +114,130 @@ export function useDriversRealtime(
     }
   }, [onDelete])
 
-  // Setup realtime subscription
+  // Fetch drivers when filters change
   useEffect(() => {
-    // Initial fetch
     fetchDrivers()
+  }, [fetchDrivers])
 
+  // Setup realtime subscription (separate from data fetching)
+  useEffect(() => {
     if (!enabled) {
       return
     }
 
-    let channel: RealtimeChannel
+    let driversChannel: RealtimeChannel
+    let sosChannel: RealtimeChannel
+    let retryTimeout: NodeJS.Timeout
 
-    // Subscribe to drivers table changes
-    channel = supabase
-      .channel('drivers-realtime')
-      .on(
-        'postgres_changes',
-        {
-          event: 'INSERT',
-          schema: 'public',
-          table: 'drivers'
-        },
-        (payload: RealtimePostgresChangesPayload<any>) => {
-          console.log('🔵 Realtime INSERT:', payload.new)
-          fetchDrivers()
-          if (onInsert) onInsert(payload.new)
-        }
-      )
-      .on(
-        'postgres_changes',
-        {
-          event: 'UPDATE',
-          schema: 'public',
-          table: 'drivers'
-        },
-        (payload: RealtimePostgresChangesPayload<any>) => {
-          console.log('🟡 Realtime UPDATE:', payload.new)
-          setDrivers(prev => prev.map(driver =>
-            driver.user_id === payload.new.user_id
-              ? { ...driver, ...payload.new }
-              : driver
-          ))
-          if (onUpdate) onUpdate(payload.new)
-        }
-      )
-      .on(
-        'postgres_changes',
-        {
-          event: 'DELETE',
-          schema: 'public',
-          table: 'drivers'
-        },
-        (payload: RealtimePostgresChangesPayload<any>) => {
-          console.log('🔴 Realtime DELETE:', payload.old)
-          const deletedUserId = (payload.old as any)?.user_id
-          if (deletedUserId) {
-            setDrivers(prev => prev.filter(driver => driver.user_id !== deletedUserId))
-            setCount(prev => Math.max(0, prev - 1))
-            if (onDelete) onDelete(deletedUserId)
+    // Subscribe to drivers and sos_requests table changes
+    const setupChannels = () => {
+      console.log('📡 Setting up Drivers Realtime subscriptions...')
+
+      // Subscribe to drivers table
+      driversChannel = supabase
+        .channel('drivers-realtime')
+        .on(
+          'postgres_changes',
+          {
+            event: 'INSERT',
+            schema: 'public',
+            table: 'drivers'
+          },
+          (payload: RealtimePostgresChangesPayload<any>) => {
+            console.log('➕ Driver INSERT event:', payload)
+            fetchDrivers()
+            if (onInsert) onInsert(payload.new)
           }
-        }
-      )
-      .subscribe((status) => {
-        console.log('📡 Realtime connection status:', status)
-        setIsConnected(status === 'SUBSCRIBED')
-      })
+        )
+        .on(
+          'postgres_changes',
+          {
+            event: 'UPDATE',
+            schema: 'public',
+            table: 'drivers'
+          },
+          (payload: RealtimePostgresChangesPayload<any>) => {
+            console.log('🔄 Driver UPDATE event:', payload)
+            fetchDrivers()
+            if (onUpdate) onUpdate(payload.new)
+          }
+        )
+        .on(
+          'postgres_changes',
+          {
+            event: 'DELETE',
+            schema: 'public',
+            table: 'drivers'
+          },
+          (payload: RealtimePostgresChangesPayload<any>) => {
+            console.log('➖ Driver DELETE event:', payload)
+            const deletedUserId = (payload.old as any)?.user_id
+            if (deletedUserId) {
+              setDrivers(prev => prev.filter(driver => driver.user_id !== deletedUserId))
+              setCount(prev => Math.max(0, prev - 1))
+              if (onDelete) onDelete(deletedUserId)
+            }
+          }
+        )
+        .subscribe((status, err) => {
+          console.log('📡 Drivers Realtime connection status:', status)
+
+          if (status === 'SUBSCRIBED') {
+            console.log('✅ Successfully connected to Drivers Realtime')
+            setIsConnected(true)
+          } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+            console.error('❌ Drivers Realtime connection error:', err)
+            setIsConnected(false)
+            // Retry connection after 5 seconds
+            retryTimeout = setTimeout(() => {
+              console.log('🔄 Retrying Drivers Realtime connection...')
+              setupChannels()
+            }, 5000)
+          } else if (status === 'CLOSED') {
+            console.log('🔌 Drivers Realtime connection closed')
+            setIsConnected(false)
+          }
+        })
+
+      // Subscribe to sos_requests table to detect driver assignments/status changes
+      sosChannel = supabase
+        .channel('sos-drivers-realtime')
+        .on(
+          'postgres_changes',
+          {
+            event: '*',
+            schema: 'public',
+            table: 'sos_requests'
+          },
+          (payload) => {
+            console.log('🚨 SOS Request event (affects driver status):', payload.eventType)
+            // Refetch drivers to update busy/available status
+            fetchDrivers()
+          }
+        )
+        .subscribe((status, err) => {
+          console.log('📡 SOS-Drivers Realtime connection status:', status)
+
+          if (status === 'SUBSCRIBED') {
+            console.log('✅ Successfully connected to SOS-Drivers Realtime')
+          } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+            console.error('❌ SOS-Drivers Realtime connection error:', err)
+          }
+        })
+    }
+
+    setupChannels()
 
     // Cleanup on unmount
     return () => {
-      console.log('🔌 Unsubscribing from realtime')
-      supabase.removeChannel(channel)
+      console.log('🔌 Unsubscribing from Drivers Realtime')
+      if (retryTimeout) clearTimeout(retryTimeout)
+      if (driversChannel) supabase.removeChannel(driversChannel)
+      if (sosChannel) supabase.removeChannel(sosChannel)
       setIsConnected(false)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [enabled])
+  }, [enabled]) // Only re-subscribe if enabled changes
 
   const refetch = useCallback(() => {
     fetchDrivers()

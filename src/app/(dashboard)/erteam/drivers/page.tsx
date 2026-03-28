@@ -1,6 +1,7 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
+import { useRouter } from 'next/navigation'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -37,7 +38,6 @@ import {
   TableRow,
 } from '@/components/ui/table'
 import {
-  useERTDrivers,
   useERTStatusColor,
   useERTShiftColor,
   formatCertifications,
@@ -47,9 +47,12 @@ import {
   getDriverCompany,
   type ERTDriverFilters
 } from '@/hooks/useERTDrivers'
+import { useERTDriversRealtime } from '@/hooks/useERTDriversRealtime'
 import { LocationService, type DatabaseCountry, type DatabaseState, type DatabaseCity } from '@/services/locationService'
+import { toast } from 'sonner'
 
 export default function DriversPage() {
+  const router = useRouter()
   const [searchTerm, setSearchTerm] = useState('')
   const [statusFilter, setStatusFilter] = useState<ERTDriverFilters['status']>('all')
   const [shiftFilter, setShiftFilter] = useState<ERTDriverFilters['shift']>('all')
@@ -64,14 +67,29 @@ export default function DriversPage() {
   const [cities, setCities] = useState<DatabaseCity[]>([])
   const [loadingLocations, setLoadingLocations] = useState(false)
 
-  // Use the custom hook to fetch drivers with status
-  const { drivers, loading, error, stats, refetch } = useERTDrivers({
+  // Memoize filters to prevent unnecessary re-subscriptions
+  const realtimeFilters = useMemo(() => ({
     search: searchTerm,
     status: statusFilter,
     shift: shiftFilter,
     country_id: countryFilter === 'all' ? undefined : countryFilter,
     state_id: stateFilter === 'all' ? undefined : stateFilter,
     city_id: cityFilter === 'all' ? undefined : cityFilter
+  }), [searchTerm, statusFilter, shiftFilter, countryFilter, stateFilter, cityFilter])
+
+  // Use the realtime hook to fetch drivers with status
+  const { drivers, loading, error, stats, refetch, isConnected } = useERTDriversRealtime({
+    enabled: true,
+    filters: realtimeFilters,
+    onInsert: (driver) => {
+      toast.success('New driver added to the system')
+    },
+    onUpdate: (driver) => {
+      toast.info('Driver status updated')
+    },
+    onDelete: (driverId) => {
+      toast.info('Driver removed from the system')
+    }
   })
 
   // Load countries on component mount
@@ -185,6 +203,15 @@ export default function DriversPage() {
     { value: 'rotating', label: 'Rotating' }
   ]
 
+  // Navigation handlers
+  const handleViewDriver = (driverId: string) => {
+    router.push(`/admin/drivers/${driverId}`)
+  }
+
+  const handleEditDriver = (driverId: string) => {
+    router.push(`/admin/drivers/${driverId}/edit`)
+  }
+
   // Helper functions for styling
   const getStatusColor = useERTStatusColor
   const getShiftColor = useERTShiftColor
@@ -254,10 +281,25 @@ export default function DriversPage() {
         {/* Header */}
         <div className="flex items-center justify-between">
           <div>
-            <h1 className="text-2xl font-bold text-gray-900 flex items-center">
-              <UserCheck className="h-6 w-6 mr-2" />
-              Driver Status
-            </h1>
+            <div className="flex items-center gap-3">
+              <h1 className="text-2xl font-bold text-gray-900 flex items-center">
+                <UserCheck className="h-6 w-6 mr-2" />
+                Driver Status
+              </h1>
+              {/* Realtime Connection Status */}
+              {isConnected && (
+                <Badge variant="default" className="bg-green-100 text-green-800">
+                  <div className="w-2 h-2 bg-green-500 rounded-full mr-2 animate-pulse" />
+                  Live
+                </Badge>
+              )}
+              {!isConnected && !loading && (
+                <Badge variant="secondary" className="bg-red-100 text-red-600">
+                  <div className="w-2 h-2 bg-red-400 rounded-full mr-2" />
+                  Offline
+                </Badge>
+              )}
+            </div>
             <p className="text-gray-600">Monitor driver availability, shifts, and performance</p>
           </div>
           <div className="flex items-center gap-2">
@@ -565,7 +607,12 @@ export default function DriversPage() {
 
                       {/* Actions */}
                       <div className="flex justify-between pt-2 border-t">
-                        <Button variant="outline" size="sm" title="View Details">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          title="View Details"
+                          onClick={() => handleViewDriver(driver.user_id)}
+                        >
                           <Eye className="h-4 w-4" />
                         </Button>
                         <Button
@@ -573,10 +620,16 @@ export default function DriversPage() {
                           size="sm"
                           title="Call Driver"
                           disabled={!driver.phone}
+                          onClick={() => driver.phone && window.open(`tel:${driver.phone}`)}
                         >
                           <Phone className="h-4 w-4" />
                         </Button>
-                        <Button variant="outline" size="sm" title="Edit Driver">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          title="Edit Driver"
+                          onClick={() => handleEditDriver(driver.user_id)}
+                        >
                           <Edit className="h-4 w-4" />
                         </Button>
                       </div>
@@ -656,7 +709,12 @@ export default function DriversPage() {
                         </TableCell>
                         <TableCell className="text-right">
                           <div className="flex justify-end gap-1">
-                            <Button variant="ghost" size="sm" title="View Details">
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              title="View Details"
+                              onClick={() => handleViewDriver(driver.user_id)}
+                            >
                               <Eye className="h-4 w-4" />
                             </Button>
                             <Button
@@ -664,10 +722,16 @@ export default function DriversPage() {
                               size="sm"
                               title="Call Driver"
                               disabled={!driver.phone}
+                              onClick={() => driver.phone && window.open(`tel:${driver.phone}`)}
                             >
                               <Phone className="h-4 w-4" />
                             </Button>
-                            <Button variant="ghost" size="sm" title="Edit Driver">
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              title="Edit Driver"
+                              onClick={() => handleEditDriver(driver.user_id)}
+                            >
                               <Edit className="h-4 w-4" />
                             </Button>
                           </div>
