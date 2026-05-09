@@ -26,7 +26,7 @@ import {
   Edit,
   Plus
 } from 'lucide-react'
-import { type SOSRequest } from '@/services/sosService'
+import { SOSService, type SOSRequest } from '@/services/sosService'
 import { emergencyContactService, type EmergencyContact, type CreateEmergencyContactData } from '@/services/emergencyContactService'
 import { toast } from 'sonner'
 
@@ -57,15 +57,19 @@ export default function SOSDetailPage() {
   const loadSOSRequest = async () => {
     try {
       setLoading(true)
-      const response = await fetch(`/api/sos/${sosId}`)
-      const result = await response.json()
+      const { data, error } = await SOSService.getSOSRequestById(sosId)
 
-      if (result.error) {
-        toast.error(`Failed to load SOS request: ${result.error}`)
+      if (error) {
+        toast.error(`Failed to load SOS request: ${error}`)
         return
       }
 
-      setSOSRequest(result.data)
+      if (!data) {
+        toast.error('SOS request not found')
+        return
+      }
+
+      setSOSRequest(data)
     } catch (error) {
       toast.error('Failed to load SOS request details')
     } finally {

@@ -159,7 +159,7 @@ export default function ERTSOSPage() {
         setAssignDialogOpen(false)
         setSelectedDriver('')
         setSelectedSOS(null)
-        // No need to call loadData() - Realtime hook will automatically refetch with joined data
+        await Promise.all([refetch(), loadData()])
       }
     } catch (error) {
       toast.error('Failed to assign driver')
@@ -183,7 +183,7 @@ export default function ERTSOSPage() {
         toast.success('Status updated successfully')
         setStatusDialogOpen(false)
         setSelectedSOS(null)
-        await loadData()
+        refetch()
       }
     } catch (error) {
       toast.error('Failed to update status')
@@ -821,16 +821,6 @@ export default function ERTSOSPage() {
                 )}
               </TabsContent>
 
-              <TabsContent value="Driver Assigned" className="mt-6">
-                {allFilteredSOSRequests.length > 0 ? (
-                  <SOSTable sosRequests={filteredSOSRequests} />
-                ) : (
-                  <div className="text-center py-8 text-gray-500">
-                    {searchQuery ? 'No assigned SOS requests match your search criteria.' : 'No assigned SOS requests at the moment.'}
-                  </div>
-                )}
-              </TabsContent>
-
               <TabsContent value="Driver En Route" className="mt-6">
                 {allFilteredSOSRequests.length > 0 ? (
                   <SOSTable sosRequests={filteredSOSRequests} />
@@ -841,7 +831,17 @@ export default function ERTSOSPage() {
                 )}
               </TabsContent>
 
-              <TabsContent value="Patient Picked Up" className="mt-6">
+              <TabsContent value="Transport Arrived" className="mt-6">
+                {allFilteredSOSRequests.length > 0 ? (
+                  <SOSTable sosRequests={filteredSOSRequests} />
+                ) : (
+                  <div className="text-center py-8 text-gray-500">
+                    {searchQuery ? 'No arrived transport SOS requests match your search criteria.' : 'No transport arrived SOS requests at the moment.'}
+                  </div>
+                )}
+              </TabsContent>
+
+              <TabsContent value="User Picked Up" className="mt-6">
                 {allFilteredSOSRequests.length > 0 ? (
                   <SOSTable sosRequests={filteredSOSRequests} />
                 ) : (
@@ -851,22 +851,12 @@ export default function ERTSOSPage() {
                 )}
               </TabsContent>
 
-              <TabsContent value="At Hospital" className="mt-6">
+              <TabsContent value="Arrived at Hospital" className="mt-6">
                 {allFilteredSOSRequests.length > 0 ? (
                   <SOSTable sosRequests={filteredSOSRequests} />
                 ) : (
                   <div className="text-center py-8 text-gray-500">
                     {searchQuery ? 'No hospital SOS requests match your search criteria.' : 'No hospital SOS requests at the moment.'}
-                  </div>
-                )}
-              </TabsContent>
-
-              <TabsContent value="Completed" className="mt-6">
-                {allFilteredSOSRequests.length > 0 ? (
-                  <SOSTable sosRequests={filteredSOSRequests} />
-                ) : (
-                  <div className="text-center py-8 text-gray-500">
-                    {searchQuery ? 'No completed SOS requests match your search criteria.' : 'No completed SOS requests found.'}
                   </div>
                 )}
               </TabsContent>

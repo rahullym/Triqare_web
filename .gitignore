@@ -45,5 +45,8 @@ next-env.d.ts
 
 # database exports (contains sensitive data)
 /sourcedb/
-*.sql
 *.dump
+
+# Export scripts (potentially sensitive)
+/scripts/export-*.ps1
+/scripts/export-*.js

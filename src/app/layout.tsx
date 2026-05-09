@@ -20,8 +20,8 @@ export default function RootLayout({
 }>) {
   return (
     <ClerkProvider
-      afterSignInUrl="/dashboard"
-      afterSignUpUrl="/dashboard"
+      signInFallbackRedirectUrl="/dashboard"
+      signUpFallbackRedirectUrl="/dashboard"
       signInUrl="/sign-in"
       signUpUrl="/sign-up"
       publishableKey={process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY}
