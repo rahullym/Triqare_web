@@ -5,6 +5,7 @@ interface LogoProps {
   size?: 'xs' | 'sm' | 'md' | 'lg' | 'xl' | '2xl' | '3xl' | 'header'
   showText?: boolean
   textClassName?: string
+  variant?: 'default' | 'footer'
 }
 
 const sizeClasses = {
@@ -15,7 +16,7 @@ const sizeClasses = {
   xl: 'h-32 w-32',
   '2xl': 'h-40 w-40',
   '3xl': 'h-48 w-48',
-  header: 'w-[90px] h-[60px]'
+  header: 'w-[140px] h-[90px]'
 }
 
 const textSizeClasses = {
@@ -33,12 +34,14 @@ export function Logo({
   className,
   size = 'md',
   showText = false,
-  textClassName
+  textClassName,
+  variant = 'default'
 }: LogoProps) {
+  const src = variant === 'footer' ? '/logo-footer.png' : '/logo.png'
   return (
     <div className={cn("flex items-center space-x-3", className)}>
       <img
-        src="/logo.png"
+        src={src}
         alt="Emergency Response Logo"
         className={cn("object-contain", sizeClasses[size])}
       />

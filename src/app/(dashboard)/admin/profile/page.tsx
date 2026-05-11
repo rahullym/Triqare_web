@@ -1,7 +1,8 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { useUser } from '@clerk/nextjs'
+import { useUser, useClerk } from '@clerk/nextjs'
+import { useRouter } from 'next/navigation'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -10,6 +11,14 @@ import { Textarea } from '@/components/ui/textarea'
 import { Switch } from '@/components/ui/switch'
 import { Badge } from '@/components/ui/badge'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
 import {
   User,
   Mail,
@@ -24,7 +33,8 @@ import {
   BarChart3,
   Loader2,
   Camera,
-  Upload
+  Upload,
+  Trash2
 } from 'lucide-react'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { toast } from 'sonner'
@@ -33,9 +43,13 @@ import { DatabaseUser } from '@/lib/supabase'
 
 export default function AdminProfilePage() {
   const { user, isLoaded } = useUser()
+  const { signOut } = useClerk()
+  const router = useRouter()
   const [isLoading, setIsLoading] = useState(false)
   const [loading, setLoading] = useState(true)
   const [dbUser, setDbUser] = useState<DatabaseUser | null>(null)
+  const [showDeleteDialog, setShowDeleteDialog] = useState(false)
+  const [isDeleting, setIsDeleting] = useState(false)
 
   // Admin data from database
   const [adminData, setAdminData] = useState({
@@ -154,6 +168,27 @@ export default function AdminProfilePage() {
 
   const handleSecurityChange = (key: string, value: boolean | string) => {
     setSecuritySettings(prev => ({ ...prev, [key]: value }))
+  }
+
+  const handleDeleteAccount = async () => {
+    if (!dbUser?.id) return
+    setIsDeleting(true)
+    try {
+      const response = await fetch(`/api/users/${dbUser.id}`, {
+        method: 'DELETE',
+      })
+      if (!response.ok) {
+        throw new Error('Failed to delete account')
+      }
+      toast.success('Account deleted successfully')
+      await signOut()
+      router.push('/')
+    } catch (error) {
+      console.error('Error deleting account:', error)
+      toast.error('Failed to delete account. Please try again.')
+      setIsDeleting(false)
+      setShowDeleteDialog(false)
+    }
   }
 
   // Show loading state while fetching data
@@ -547,8 +582,75 @@ export default function AdminProfilePage() {
               </div>
             </CardContent>
           </Card>
+
+          {/* Danger Zone */}
+          <Card className="border-red-200">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2 text-red-600">
+                <Trash2 className="h-5 w-5" />
+                Danger Zone
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="font-medium text-gray-900">Delete Account</p>
+                  <p className="text-sm text-gray-600">Permanently delete your account and all associated data. This action cannot be undone.</p>
+                </div>
+                <Button
+                  variant="destructive"
+                  onClick={() => setShowDeleteDialog(true)}
+                  disabled={!dbUser}
+                >
+                  <Trash2 className="h-4 w-4 mr-2" />
+                  Delete Account
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
         </TabsContent>
       </Tabs>
+
+      {/* Delete Account Confirmation Dialog */}
+      <Dialog open={showDeleteDialog} onOpenChange={setShowDeleteDialog}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle className="text-red-600 flex items-center gap-2">
+              <Trash2 className="h-5 w-5" />
+              Delete Account
+            </DialogTitle>
+            <DialogDescription>
+              This will permanently delete your account and all associated data including profile information, settings, and history. This action <strong>cannot be undone</strong>.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="gap-2">
+            <Button
+              variant="outline"
+              onClick={() => setShowDeleteDialog(false)}
+              disabled={isDeleting}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={handleDeleteAccount}
+              disabled={isDeleting}
+            >
+              {isDeleting ? (
+                <>
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  Deleting...
+                </>
+              ) : (
+                <>
+                  <Trash2 className="h-4 w-4 mr-2" />
+                  Delete My Account
+                </>
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
     </RoleGuard>
   )
