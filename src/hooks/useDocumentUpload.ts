@@ -81,13 +81,16 @@ export function useDocumentUpload(draftId: string) {
         update(type, entry.id, { status: 'done', progress: 100, path })
       } catch (err) {
         const label = getDocumentTypeDef(type)?.label ?? 'document'
-        update(type, entry.id, {
-          status: 'error',
-          error:
-            err instanceof Error && err.message === FILE_TOO_LARGE_MESSAGE
-              ? FILE_TOO_LARGE_MESSAGE
-              : `Upload failed for ${label}. Please check your internet connection and try again.`,
-        })
+        // Surface the real reason. Only a genuine connectivity failure (XHR
+        // `onerror` → "Network error") is phrased as an internet problem;
+        // server/validation errors (e.g. "Could not prepare the upload.",
+        // file-too-large, an HTTP status) are shown verbatim so the failure is
+        // diagnosable instead of always blaming the user's connection.
+        const reason =
+          err instanceof Error && err.message && err.message !== 'Network error'
+            ? err.message
+            : `Upload failed for ${label}. Please check your internet connection and try again.`
+        update(type, entry.id, { status: 'error', error: reason })
       }
     },
     [draftId, update],
