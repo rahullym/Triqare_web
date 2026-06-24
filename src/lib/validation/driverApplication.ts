@@ -21,12 +21,14 @@ export const VEHICLE_TYPE_LABELS: Record<VehicleType, string> = {
 export const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 export const PHONE_REGEX = /^\d{10}$/
 export const AADHAAR_REGEX = /^\d{12}$/
+export const PINCODE_REGEX = /^\d{6}$/
 
 export const VALIDATION_MESSAGES = {
   required: 'This field is required',
   email: 'Please enter a valid email address',
   phone: 'Phone number must be 10 digits',
   aadhaar: 'Aadhaar number must be 12 digits',
+  pincode: 'Pincode must be 6 digits',
   dobAge: 'Driver must be at least 21 years old',
   licenseExpired: 'Driving license is expired. Please renew before applying.',
   missingMandatory: 'Please fill all mandatory fields',
@@ -69,6 +71,14 @@ const optionalInt = (min: number, max: number) =>
     z.coerce.number().int().min(min).max(max).optional(),
   )
 
+// Empty string / null → undefined, then validate against the enum (optional).
+// Lets a <Select> sit at its placeholder ('') and still count as "not provided".
+const optionalEnum = <T extends readonly [string, ...string[]]>(values: T) =>
+  z.preprocess(
+    (v) => (v === '' || v === null || v === undefined ? undefined : v),
+    z.enum(values).optional(),
+  )
+
 export const driverApplicationSchema = z.object({
   // Personal
   full_name: requiredString(),
@@ -79,6 +89,9 @@ export const driverApplicationSchema = z.object({
     VALIDATION_MESSAGES.dobAge,
   ),
   address: requiredString(),
+  city: requiredString(),
+  state: requiredString(),
+  pincode: requiredString().regex(PINCODE_REGEX, VALIDATION_MESSAGES.pincode),
   aadhaar_number: requiredString().regex(AADHAAR_REGEX, VALIDATION_MESSAGES.aadhaar),
   emergency_contact_name: requiredString(),
   emergency_contact_phone: requiredString().regex(PHONE_REGEX, VALIDATION_MESSAGES.phone),
@@ -88,7 +101,7 @@ export const driverApplicationSchema = z.object({
   vehicle_type: z.enum(VEHICLE_TYPES, { message: VALIDATION_MESSAGES.required }),
   vehicle_make_model: optionalString,
   vehicle_year: optionalInt(1900, 2100),
-  ambulance_permit_number: requiredString(),
+  ambulance_permit_number: optionalString,
 
   // License
   license_number: requiredString(),
@@ -96,7 +109,7 @@ export const driverApplicationSchema = z.object({
     (v) => isFutureDate(v),
     VALIDATION_MESSAGES.licenseExpired,
   ),
-  license_type: z.enum(LICENSE_TYPES, { message: VALIDATION_MESSAGES.required }),
+  license_type: optionalEnum(LICENSE_TYPES),
 
   // Additional
   driving_experience_years: optionalInt(0, 80),

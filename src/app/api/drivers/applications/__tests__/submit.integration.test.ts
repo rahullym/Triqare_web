@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { NextRequest } from 'next/server'
 import { REFERENCE_NUMBER_RE } from '@/lib/referenceNumber'
-import { REQUIRED_DOCUMENT_KEYS } from '@/lib/storage/driverDocuments'
+import { DOCUMENT_TYPE_KEYS } from '@/lib/storage/driverDocuments'
 
 // ---- shared mock state (hoisted so vi.mock factories can see it) -----------
 const h = vi.hoisted(() => {
@@ -67,8 +67,10 @@ import { listApplications } from '@/services/driverApplicationService'
 const DRAFT_ID = '11111111-2222-4333-8444-555555555555'
 
 function buildPayload() {
+  // Documents are optional now, but the happy-path test still uploads all of them
+  // to exercise the draft → reference-number move logic.
   const documents: Record<string, string[]> = {}
-  for (const key of REQUIRED_DOCUMENT_KEYS) {
+  for (const key of DOCUMENT_TYPE_KEYS) {
     documents[key] = [`drivers/_drafts/${DRAFT_ID}/${key}/file.pdf`]
   }
   return {
@@ -77,6 +79,9 @@ function buildPayload() {
     email: 'asha@example.com',
     date_of_birth: '1990-01-01',
     address: '12 MG Road',
+    city: 'Bengaluru',
+    state: 'Karnataka',
+    pincode: '560001',
     aadhaar_number: '123412341234',
     emergency_contact_name: 'Ravi',
     emergency_contact_phone: '9876500000',

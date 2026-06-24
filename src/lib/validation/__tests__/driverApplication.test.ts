@@ -35,7 +35,10 @@ const validBase = () => ({
   phone: '9876543210',
   email: 'asha@example.com',
   date_of_birth: isoYearsFromNow(-30),
-  address: '12 MG Road, Bengaluru',
+  address: '12 MG Road',
+  city: 'Bengaluru',
+  state: 'Karnataka',
+  pincode: '560001',
   aadhaar_number: '123412341234',
   emergency_contact_name: 'Ravi Rao',
   emergency_contact_phone: '9876500000',
@@ -69,6 +72,7 @@ describe('driverApplicationSchema', () => {
     { field: 'phone', value: '12345', message: VALIDATION_MESSAGES.phone },
     { field: 'emergency_contact_phone', value: '999', message: VALIDATION_MESSAGES.phone },
     { field: 'aadhaar_number', value: '12345', message: VALIDATION_MESSAGES.aadhaar },
+    { field: 'pincode', value: '123', message: VALIDATION_MESSAGES.pincode },
   ]
   for (const c of cases) {
     it(`rejects bad ${c.field} with the spec message`, () => {
@@ -99,6 +103,15 @@ describe('driverApplicationSchema', () => {
 
   it('treats optional numeric fields as optional', () => {
     const res = driverApplicationSchema.safeParse({ ...validBase(), vehicle_year: '', driving_experience_years: '' })
+    expect(res.success).toBe(true)
+  })
+
+  it('accepts a blank ambulance permit number and license type', () => {
+    const res = driverApplicationSchema.safeParse({
+      ...validBase(),
+      ambulance_permit_number: '',
+      license_type: '',
+    })
     expect(res.success).toBe(true)
   })
 })

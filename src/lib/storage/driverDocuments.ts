@@ -37,8 +37,12 @@ export const DOCUMENT_TYPES: DocumentTypeDef[] = [
 ]
 
 export const DOCUMENT_TYPE_KEYS = DOCUMENT_TYPES.map((d) => d.key)
-/** All listed documents are mandatory per the spec. */
-export const REQUIRED_DOCUMENT_KEYS = DOCUMENT_TYPE_KEYS
+/**
+ * Documents required for a valid submission. Currently empty — all KYC documents
+ * are optional for now (applicants may submit without uploading anything). Add
+ * keys here to re-enforce mandatory uploads later.
+ */
+export const REQUIRED_DOCUMENT_KEYS: string[] = []
 
 export function isValidDocumentType(key: string): boolean {
   return DOCUMENT_TYPE_KEYS.includes(key)

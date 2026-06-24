@@ -26,7 +26,10 @@ CREATE TABLE IF NOT EXISTS public.driver_applications (
     phone VARCHAR(20) NOT NULL,
     email VARCHAR(255) NOT NULL,
     date_of_birth DATE NOT NULL,
-    address TEXT NOT NULL,
+    address TEXT NOT NULL,                       -- street / house / area line
+    city VARCHAR(100),                           -- required by the form; nullable for legacy rows
+    state VARCHAR(100),                          -- required by the form; nullable for legacy rows
+    pincode VARCHAR(10),                         -- required by the form; nullable for legacy rows
     emergency_contact_name VARCHAR(255) NOT NULL,
     emergency_contact_phone VARCHAR(20) NOT NULL,
 
@@ -41,7 +44,7 @@ CREATE TABLE IF NOT EXISTS public.driver_applications (
     vehicle_type VARCHAR(50) NOT NULL,          -- 'ambulance' | 'medical_van'
     vehicle_make_model VARCHAR(255),            -- optional
     vehicle_year INTEGER,                       -- optional
-    ambulance_permit_number VARCHAR(100) NOT NULL,
+    ambulance_permit_number VARCHAR(100),       -- optional
 
     -- License (number encrypted at rest)
     license_ciphertext TEXT NOT NULL,
@@ -49,7 +52,7 @@ CREATE TABLE IF NOT EXISTS public.driver_applications (
     license_tag TEXT NOT NULL,
     license_last4 VARCHAR(4) NOT NULL,
     license_expiry DATE NOT NULL,
-    license_type VARCHAR(10) NOT NULL,          -- 'LMV' | 'HMV'
+    license_type VARCHAR(10),                   -- optional · 'LMV' | 'HMV'
 
     -- Additional
     driving_experience_years INTEGER,           -- optional

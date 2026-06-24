@@ -29,6 +29,9 @@ interface ApplicationDetail {
   email: string
   date_of_birth: string
   address: string
+  city: string
+  state: string
+  pincode: string
   emergency_contact_name: string
   emergency_contact_phone: string
   aadhaar_number: string | null
@@ -37,11 +40,11 @@ interface ApplicationDetail {
   vehicle_type: string
   vehicle_make_model: string | null
   vehicle_year: number | null
-  ambulance_permit_number: string
+  ambulance_permit_number: string | null
   license_number: string | null
   license_last4: string
   license_expiry: string
-  license_type: string
+  license_type: string | null
   driving_experience_years: number | null
   previous_ambulance_experience: boolean | null
   status: Status
@@ -185,6 +188,9 @@ export default function ApplicationDetailPage() {
                   <Row label="Email" value={app.email} />
                   <Row label="Date of Birth" value={app.date_of_birth} />
                   <Row label="Address" value={app.address} />
+                  <Row label="City" value={app.city} />
+                  <Row label="State" value={app.state} />
+                  <Row label="Pincode" value={app.pincode} />
                   <Row label="Aadhaar" value={app.aadhaar_number ?? `••••••••${app.aadhaar_last4}`} />
                   <Row label="Emergency Contact" value={`${app.emergency_contact_name} · ${app.emergency_contact_phone}`} />
                 </dl>

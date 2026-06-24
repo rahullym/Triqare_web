@@ -20,11 +20,13 @@ interface Props {
   onAdd: (files: FileList) => void
   onRemove: (id: string) => void
   onRetry: (id: string) => void
+  /** Show the red "*" marker — only for documents that are mandatory. */
+  required?: boolean
   /** Highlight the field in red when a required doc is missing after a submit attempt. */
   invalid?: boolean
 }
 
-export function DocumentUploadField({ def, files, onAdd, onRemove, onRetry, invalid }: Props) {
+export function DocumentUploadField({ def, files, onAdd, onRemove, onRetry, required, invalid }: Props) {
   const inputRef = useRef<HTMLInputElement>(null)
   const [preview, setPreview] = useState<DocFile | null>(null)
 
@@ -53,7 +55,7 @@ export function DocumentUploadField({ def, files, onAdd, onRemove, onRetry, inva
       <div className="flex items-start justify-between gap-2">
         <div className="text-sm font-medium text-[#333333]">
           {def.label}
-          <span className="ml-0.5 text-[#cc3333]">*</span>
+          {required && <span className="ml-0.5 text-[#cc3333]">*</span>}
           {def.maxFiles > 1 && (
             <span className="ml-1 text-xs font-normal text-[#999999]">(up to {def.maxFiles})</span>
           )}

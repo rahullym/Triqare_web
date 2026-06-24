@@ -15,6 +15,9 @@ export interface DriverApplicationRow {
   email: string
   date_of_birth: string
   address: string
+  city: string
+  state: string
+  pincode: string
   emergency_contact_name: string
   emergency_contact_phone: string
   aadhaar_ciphertext: string
@@ -25,13 +28,13 @@ export interface DriverApplicationRow {
   vehicle_type: string
   vehicle_make_model: string | null
   vehicle_year: number | null
-  ambulance_permit_number: string
+  ambulance_permit_number: string | null
   license_ciphertext: string
   license_iv: string
   license_tag: string
   license_last4: string
   license_expiry: string
-  license_type: string
+  license_type: string | null
   driving_experience_years: number | null
   previous_ambulance_experience: boolean | null
   document_storage_path: string
