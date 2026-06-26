@@ -4,7 +4,7 @@
 // chrome so the homepage and inner pages (drivers, apply, demo, registration) stay aligned.
 import Link from 'next/link'
 import { Logo } from '@/components/ui/logo'
-import { Smartphone } from 'lucide-react'
+import { Smartphone, Menu } from 'lucide-react'
 import { APP_STORE_URL, PLAY_STORE_URL } from '@/lib/appLinks'
 import { StoreBadge } from '@/components/public/StoreBadge'
 import {
@@ -28,6 +28,27 @@ export function SiteHeader() {
           <Link href="/drivers" className="hover:text-slate-900">Drive with QSoS</Link>
         </nav>
         <div className="flex items-center gap-2 sm:gap-3">
+          {/* Mobile hamburger — exposes the nav links (incl. the driver utility) on
+              small screens, where the desktop nav (lg:flex) is hidden. */}
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button
+                type="button"
+                aria-label="Open menu"
+                className="inline-flex items-center justify-center rounded-lg border border-slate-300 p-2 text-slate-700 transition hover:bg-white focus:outline-none lg:hidden">
+                <Menu className="h-5 w-5" />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-56 p-2">
+              <div className="flex flex-col">
+                <Link href="/#platform" className="rounded-md px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100">Platform</Link>
+                <Link href="/#mobile" className="rounded-md px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100">Mobile app</Link>
+                <Link href="/drivers" className="rounded-md px-3 py-2 text-sm font-semibold text-slate-900 hover:bg-slate-100">Drive with QSoS</Link>
+                <Link href="/demo" className="rounded-md px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100">Live demo</Link>
+                <Link href="/sign-in" className="rounded-md px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100">Sign in</Link>
+              </div>
+            </DropdownMenuContent>
+          </DropdownMenu>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <button
