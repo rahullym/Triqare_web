@@ -82,7 +82,7 @@ export function SiteHeader() {
             Live demo
           </Link>
           <Link href="/sign-in" className="hidden text-sm font-semibold text-slate-700 hover:text-slate-900 sm:block">Sign in</Link>
-          <Link href="/sign-up" className="rounded-lg px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:opacity-90" style={{ background: RED }}>
+          <Link href="/sign-up" className="hidden items-center rounded-lg px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:opacity-90 lg:inline-flex" style={{ background: RED }}>
             Get started
           </Link>
         </div>
