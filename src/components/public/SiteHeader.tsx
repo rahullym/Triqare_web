@@ -39,7 +39,7 @@ export function SiteHeader() {
                 <Menu className="h-5 w-5" />
               </button>
             </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="w-56 p-2">
+            <DropdownMenuContent align="end" sideOffset={8} className="w-56 p-2 bg-white text-slate-900 border border-slate-200 shadow-lg">
               <div className="flex flex-col">
                 <Link href="/#platform" className="rounded-md px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100">Platform</Link>
                 <Link href="/#mobile" className="rounded-md px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-100">Mobile app</Link>
@@ -57,7 +57,7 @@ export function SiteHeader() {
                 <Smartphone className="h-4 w-4" /> Get the app
               </button>
             </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="w-64 p-3">
+            <DropdownMenuContent align="end" sideOffset={8} className="w-64 p-3 bg-white text-slate-900 border border-slate-200 shadow-lg">
               <div className="space-y-2.5">
                 <StoreBadge
                   href={APP_STORE_URL}
