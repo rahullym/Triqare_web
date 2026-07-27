@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { useUser, useClerk } from '@clerk/nextjs'
+import { useAuth } from '@/components/auth/AuthProvider'
 import { useRouter } from 'next/navigation'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -42,8 +42,7 @@ import { RoleGuard } from '@/components/auth/RoleGuard'
 import { DatabaseUser } from '@/lib/supabase'
 
 export default function AdminProfilePage() {
-  const { user, isLoaded } = useUser()
-  const { signOut } = useClerk()
+  const { authUser, appUser, loading: authLoading, signOut } = useAuth()
   const router = useRouter()
   const [isLoading, setIsLoading] = useState(false)
   const [loading, setLoading] = useState(true)
@@ -82,7 +81,7 @@ export default function AdminProfilePage() {
   // Fetch user profile from database
   useEffect(() => {
     const fetchProfile = async () => {
-      if (!user?.id) return
+      if (!authUser?.id) return
 
       try {
         const response = await fetch('/api/profile')
@@ -102,16 +101,16 @@ export default function AdminProfilePage() {
             accountCreated: data.user.created_at || ''
           })
         } else {
-          // Fallback to Clerk data if database user doesn't exist
+          // Fallback to auth/app user data if database user doesn't exist
           setAdminData({
-            fullName: `${user.firstName || ''} ${user.lastName || ''}`.trim(),
-            email: user.primaryEmailAddress?.emailAddress || '',
-            phone: user.phoneNumbers?.[0]?.phoneNumber || '',
+            fullName: `${appUser?.firstName || ''} ${appUser?.lastName || ''}`.trim(),
+            email: appUser?.email ?? authUser?.email ?? '',
+            phone: appUser?.phone || '',
             role: 'System Administrator',
             department: 'Emergency Management',
             employeeId: '',
-            lastLogin: user.lastSignInAt ? new Date(user.lastSignInAt).toISOString() : '',
-            accountCreated: user.createdAt ? new Date(user.createdAt).toISOString() : ''
+            lastLogin: '',
+            accountCreated: ''
           })
         }
       } catch (error) {
@@ -122,10 +121,10 @@ export default function AdminProfilePage() {
       }
     }
 
-    if (user && isLoaded) {
+    if (authUser && !authLoading) {
       fetchProfile()
     }
-  }, [user, isLoaded])
+  }, [authUser, authLoading])
 
   const handleSaveProfile = async () => {
     setIsLoading(true)
@@ -192,7 +191,7 @@ export default function AdminProfilePage() {
   }
 
   // Show loading state while fetching data
-  if (!isLoaded || loading) {
+  if (authLoading || loading) {
     return (
       <RoleGuard allowedRoles={['admin']}>
         <div className="min-h-screen bg-gradient-to-br from-red-50 to-orange-100 flex items-center justify-center">
@@ -215,7 +214,7 @@ export default function AdminProfilePage() {
         <div className="flex items-center space-x-4">
           <Avatar className="w-16 h-16">
             <AvatarImage
-              src={dbUser?.avatar_url || user?.imageUrl}
+              src={dbUser?.avatar_url || undefined}
               alt={adminData.fullName || 'Admin'}
             />
             <AvatarFallback className="text-lg bg-gradient-to-br from-red-500 to-orange-600 text-white">
@@ -315,7 +314,7 @@ export default function AdminProfilePage() {
                 <div className="relative">
                   <Avatar className="w-24 h-24">
                     <AvatarImage
-                      src={dbUser?.avatar_url || user?.imageUrl}
+                      src={dbUser?.avatar_url || undefined}
                       alt={adminData.fullName || 'Admin'}
                     />
                     <AvatarFallback className="text-xl bg-gradient-to-br from-red-500 to-orange-600 text-white">

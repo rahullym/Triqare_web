@@ -1,12 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { createClient } from '@/lib/supabase/server'
-import { auth } from '@clerk/nextjs/server'
+import { createClient, getAuthedUser } from '@/lib/supabase/server'
 
 // GET /api/ambulances - Get all ambulances
 export async function GET(request: NextRequest) {
   try {
-    const { userId } = await auth()
-    if (!userId) {
+    const { user } = await getAuthedUser()
+    if (!user) {
       return NextResponse.json(
         { error: 'Unauthorized' },
         { status: 401 }
@@ -69,8 +68,8 @@ export async function GET(request: NextRequest) {
 // POST /api/ambulances - Create new ambulance
 export async function POST(request: NextRequest) {
   try {
-    const { userId } = await auth()
-    if (!userId) {
+    const { user } = await getAuthedUser()
+    if (!user) {
       return NextResponse.json(
         { error: 'Unauthorized' },
         { status: 401 }

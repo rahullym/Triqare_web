@@ -24,9 +24,11 @@ export async function GET(request: NextRequest) {
       })
     }
 
-    // Test getting a specific user by Clerk ID
+    // Test resolving a specific user by their Supabase auth id (fallback to legacy clerk id).
     const testUser = users[0]
-    const { data: userByClerkId, error: clerkError } = await UserService.getUserByClerkId(testUser.clerk_user_id)
+    const { data: userByClerkId, error: clerkError } = testUser.auth_user_id
+      ? await UserService.getUserByAuthId(testUser.auth_user_id)
+      : await UserService.getUserByClerkId(testUser.clerk_user_id ?? '')
 
     return NextResponse.json({
       success: true,

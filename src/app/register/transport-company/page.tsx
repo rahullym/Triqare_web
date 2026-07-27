@@ -3,7 +3,7 @@
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
-import { useSignUp } from '@clerk/nextjs'
+import { getBrowserSupabase } from '@/lib/supabase/browser'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -43,7 +43,6 @@ interface FormErrors {
 
 export default function TransportCompanyRegistration() {
   const router = useRouter()
-  const { isLoaded, signUp } = useSignUp()
 
   const [currentStep, setCurrentStep] = useState(1)
   const totalSteps = 3
@@ -112,45 +111,51 @@ export default function TransportCompanyRegistration() {
   }
 
   const handleSubmit = async () => {
-    if (!validateStep(currentStep) || !isLoaded) return
+    if (!validateStep(currentStep)) return
 
     setIsLoading(true)
 
     try {
-      // Create Clerk user
-      const result = await signUp.create({
-        emailAddress: formData.email,
+      // Create the Supabase auth user. A Postgres trigger (handle_new_auth_user)
+      // creates the public.users row automatically and links any pre-existing row
+      // by email — so the client must NOT set a privileged role here; the `data`
+      // below is display-only metadata. The transport_company role is applied by
+      // the domain API / admin verification flow, not from the browser.
+      const supabase = getBrowserSupabase()
+      const { data, error } = await supabase.auth.signUp({
+        email: formData.email,
         password: formData.password,
-        firstName: formData.firstName,
-        lastName: formData.lastName,
-        unsafeMetadata: {
-          phone: formData.phone,
-          companyName: formData.companyName,
-          registrationNumber: formData.registrationNumber,
-          addressLine: formData.addressLine,
-          licenseValidTill: formData.licenseValidTill,
-          role: 'transport_company'
-        }
+        options: {
+          emailRedirectTo: `${window.location.origin}/auth/callback?redirect_url=/dashboard`,
+          data: {
+            first_name: formData.firstName,
+            last_name: formData.lastName,
+            full_name: `${formData.firstName} ${formData.lastName}`,
+          },
+        },
       })
 
-      // Create database records via API BEFORE sending the verification email.
-      // This ordering ensures we never send the "you're registered" email (or claim
-      // success) when the DB write failed: a failure here aborts the flow, so the
-      // user can simply retry — the Clerk sign-up attempt is still pending and the
-      // unverified email is not permanently locked.
-      const response = await fetch('/api/register/transport-company', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          clerkUserId: result.id,
-          ...formData
-        }),
-      })
+      if (error) {
+        toast.error(error.message || 'Registration failed. Please try again.')
+        return
+      }
 
+      const authUserId = data.user?.id
+
+      // Create the domain (transport_companies) record via API.
       // Defense-in-depth: the request can be silently redirected to the sign-in
       // page (no active session yet), which returns 200 HTML and would otherwise
       // look like a success. Require a real JSON success payload before proceeding
       // so we never claim the DB record was created when it was not.
+      const response = await fetch('/api/register/transport-company', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          authUserId,
+          ...formData
+        }),
+      })
+
       if (response.redirected || !response.headers.get('content-type')?.includes('application/json')) {
         throw new Error('Failed to create transport company record. Please try again or contact support.')
       }
@@ -166,11 +171,16 @@ export default function TransportCompanyRegistration() {
         throw new Error(resultJson.error || 'Failed to create transport company record')
       }
 
-      // DB record confirmed created — now send the verification email.
-      await signUp.prepareEmailAddressVerification({ strategy: 'email_code' })
-
-      toast.success('Registration successful! Please check your email to verify your account.')
-      router.push(`/verify-email?email=${encodeURIComponent(formData.email)}`)
+      // With Supabase, the confirmation email is sent as part of signUp above.
+      // If no session was returned, email confirmation is required; otherwise the
+      // user is already signed in and can go straight to the dashboard.
+      if (!data.session) {
+        toast.success('Registration successful! Please check your email to confirm your account, then sign in.')
+        router.push(`/verify-email?email=${encodeURIComponent(formData.email)}`)
+      } else {
+        toast.success('Registration successful!')
+        router.replace('/dashboard')
+      }
 
     } catch (error: unknown) {
       console.error('Registration error:', error)

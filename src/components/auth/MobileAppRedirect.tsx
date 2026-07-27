@@ -2,7 +2,7 @@
 
 import { useEffect } from 'react'
 import { useRouter } from 'next/navigation'
-import { SignOutButton } from '@clerk/nextjs'
+import { useAuth } from '@/components/auth/AuthProvider'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Smartphone, Download, QrCode, LogOut, ArrowRight } from 'lucide-react'
@@ -16,6 +16,7 @@ interface MobileAppRedirectProps {
 
 export function MobileAppRedirect({ role, userName }: MobileAppRedirectProps) {
   const router = useRouter()
+  const { signOut } = useAuth()
 
   const roleConfig = {
     patient: {
@@ -191,15 +192,14 @@ export function MobileAppRedirect({ role, userName }: MobileAppRedirectProps) {
                 Back to Home
               </Button>
               
-              <SignOutButton>
-                <Button 
-                  variant="outline" 
-                  className="w-full sm:w-auto text-red-600 border-red-200 hover:bg-red-50"
-                >
-                  <LogOut className="w-4 h-4 mr-2" />
-                  Sign Out
-                </Button>
-              </SignOutButton>
+              <Button
+                variant="outline"
+                className="w-full sm:w-auto text-red-600 border-red-200 hover:bg-red-50"
+                onClick={() => signOut()}
+              >
+                <LogOut className="w-4 h-4 mr-2" />
+                Sign Out
+              </Button>
             </div>
           </div>
         </CardContent>

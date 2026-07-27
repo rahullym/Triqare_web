@@ -2,8 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { useUser, SignOutButton } from '@clerk/nextjs'
-import { useRole } from '@/hooks/useRole'
+import { useAuth } from '@/components/auth/AuthProvider'
 import { getDefaultDashboardPath } from '@/lib/navigation'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -11,13 +10,12 @@ import { AlertTriangle, Shield, Truck, ArrowRight, Home, LogOut } from 'lucide-r
 
 export default function DashboardPage() {
   const router = useRouter()
-  const { user, isLoaded } = useUser()
-  const { role, loading } = useRole()
+  const { authUser, appUser, role, loading, signOut } = useAuth()
   const [redirecting, setRedirecting] = useState(false)
 
   useEffect(() => {
-    if (!loading && isLoaded) {
-      if (!user) {
+    if (!loading) {
+      if (!authUser) {
         // User not authenticated, redirect to sign-in
         router.push('/sign-in')
         return
@@ -35,10 +33,10 @@ export default function DashboardPage() {
       }
       // If no role, show role selection interface
     }
-  }, [role, loading, isLoaded, user, router])
+  }, [role, loading, authUser, router])
 
   // Show loading state while checking authentication and role
-  if (loading || !isLoaded) {
+  if (loading) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex items-center justify-center">
         <div className="text-center space-y-4">
@@ -84,7 +82,7 @@ export default function DashboardPage() {
   }
 
   // User is authenticated but has no role assigned
-  if (user && !role) {
+  if (authUser && !role) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-orange-50 to-amber-100 flex items-center justify-center p-6">
         <Card className="max-w-2xl w-full shadow-xl">
@@ -104,7 +102,7 @@ export default function DashboardPage() {
 
             <div className="space-y-4">
               <p className="text-gray-600">
-                Welcome <strong>{user.firstName || user.primaryEmailAddress?.emailAddress}</strong>!
+                Welcome <strong>{appUser?.firstName || appUser?.email || authUser?.email}</strong>!
                 Your account has been created successfully, but you need a role assigned to access the system.
               </p>
 
@@ -149,12 +147,10 @@ export default function DashboardPage() {
                 <Home className="w-4 h-4" />
                 <span>Go Home</span>
               </Button>
-              <SignOutButton>
-                <Button variant="outline" className="flex items-center space-x-2">
-                  <LogOut className="w-4 h-4" />
-                  <span>Sign Out</span>
-                </Button>
-              </SignOutButton>
+              <Button variant="outline" className="flex items-center space-x-2" onClick={() => signOut()}>
+                <LogOut className="w-4 h-4" />
+                <span>Sign Out</span>
+              </Button>
               <Button
                 onClick={() => window.location.reload()}
                 className="bg-blue-600 hover:bg-blue-700 flex items-center space-x-2"

@@ -1,11 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { supabase } from '@/lib/supabase'
+import { createClient } from '@/lib/supabase/server'
+import { UserService } from '@/services/userService'
 
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json()
     const {
-      clerkUserId,
+      authUserId,
       firstName,
       lastName,
       email,
@@ -27,11 +28,11 @@ export async function POST(req: NextRequest) {
       insuranceNumber
     } = body
 
-    console.log('Creating patient registration for:', { email, clerkUserId })
+    console.log('Creating patient registration for:', { email, authUserId })
 
     // Basic input validation (defense-in-depth; the client also validates).
     const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
-    if (typeof clerkUserId !== 'string' || !clerkUserId.startsWith('user_')) {
+    if (typeof authUserId !== 'string' || !authUserId.trim()) {
       return NextResponse.json(
         { success: false, error: 'Invalid registration request' },
         { status: 400 },
@@ -51,78 +52,86 @@ export async function POST(req: NextRequest) {
       )
     }
 
-    // Idempotency / anti-duplicate guard: if a user row already exists for this
-    // Clerk id or email, do not create a second one (the registration POST can be
-    // retried by the client, and the endpoint is unauthenticated).
-    const { data: existing } = await supabase
-      .from('users')
-      .select('id, clerk_user_id, email')
-      .or(`clerk_user_id.eq.${clerkUserId},email.eq.${email}`)
-      .maybeSingle()
-
-    if (existing) {
-      if (existing.clerk_user_id === clerkUserId) {
-        // Same Clerk identity retrying — treat as success (already registered).
-        return NextResponse.json({
-          success: true,
-          message: 'Patient already registered',
-          data: { user: existing },
-        })
-      }
-      // Email belongs to a different Clerk identity — refuse to overwrite/duplicate.
+    // The handle_new_auth_user() DB trigger already created (and linked) the
+    // public.users row for this auth identity. Resolve it — do NOT insert a users
+    // row or set the role here (the trigger owns that).
+    const { data: user, error: lookupError } = await UserService.getUserByAuthId(authUserId)
+    if (lookupError) {
+      console.error('Error resolving user by auth id:', lookupError)
       return NextResponse.json(
-        { success: false, error: 'An account already exists for this email' },
-        { status: 409 },
+        { success: false, error: 'Failed to resolve user account' },
+        { status: 500 },
+      )
+    }
+    if (!user) {
+      return NextResponse.json(
+        { success: false, error: 'Account not found. Please try signing in again.' },
+        { status: 404 },
       )
     }
 
-    // Create user record
-    const { data: user, error: userError } = await supabase
-      .from('users')
-      .insert([
-        {
-          clerk_user_id: clerkUserId,
-          email,
-          first_name: firstName,
-          last_name: lastName,
-          full_name: `${firstName} ${lastName}`,
-          phone,
-          role: 'patient',
-          is_active: true,
-          date_of_birth: dateOfBirth,
-          gender,
-          address,
-          city,
-          state,
-          zip_code: zipCode,
-          // Business rule: main patients are India-only. Hard-lock server-side so the
-          // stored country can't be anything else regardless of the submitted value.
-          country: 'India',
-          emergency_contact_name: emergencyContactName,
-          emergency_contact_phone: emergencyContactPhone,
-          emergency_contact_relationship: emergencyContactRelationship,
-          medical_conditions: medicalConditions,
-          allergies,
-          medications,
-          blood_type: bloodType,
-          insurance_provider: insuranceProvider,
-          insurance_number: insuranceNumber
-        }
-      ])
-      .select()
-      .single()
+    const supabase = createClient()
+
+    // Idempotency / anti-duplicate guard: if a patient profile already exists for
+    // this user, treat the (retried) registration as success rather than inserting
+    // a second row.
+    const { data: existingPatient } = await supabase
+      .from('patients')
+      .select('user_id')
+      .eq('user_id', user.id)
+      .maybeSingle()
+
+    if (existingPatient) {
+      return NextResponse.json({
+        success: true,
+        message: 'Patient already registered',
+        data: { user, patient: existingPatient },
+      })
+    }
+
+    // Patch profile fields onto the (trigger-created) users row. Never touches the
+    // role or any auth-identity column.
+    const profileUpdates: Record<string, any> = {
+      first_name: firstName,
+      last_name: lastName,
+      full_name: `${firstName} ${lastName}`,
+      phone,
+      is_active: true,
+      date_of_birth: dateOfBirth,
+      gender,
+      address,
+      city,
+      state,
+      zip_code: zipCode,
+      // Business rule: main patients are India-only. Hard-lock server-side so the
+      // stored country can't be anything else regardless of the submitted value.
+      country: 'India',
+      emergency_contact_name: emergencyContactName,
+      emergency_contact_phone: emergencyContactPhone,
+      emergency_contact_relationship: emergencyContactRelationship,
+      medical_conditions: medicalConditions,
+      allergies,
+      medications,
+      blood_type: bloodType,
+      insurance_provider: insuranceProvider,
+      insurance_number: insuranceNumber,
+    }
+
+    const { data: updatedUser, error: userError } = await UserService.updateUser(user.id, profileUpdates)
 
     if (userError) {
-      console.error('Error creating user:', userError)
+      console.error('Error updating user:', userError)
       return NextResponse.json({
         success: false,
-        error: 'Failed to create user record'
+        error: 'Failed to update user record'
       }, { status: 500 })
     }
 
-    console.log('✅ Created user:', user)
+    console.log('✅ Updated user:', updatedUser)
 
-    // Create patient record
+    // Create patient record. NOTE: unlike the old Clerk flow we do NOT delete the
+    // users row on failure — it is the auth identity, and deleting it would orphan
+    // the login.
     const { data: patient, error: patientError } = await supabase
       .from('patients')
       .insert([
@@ -138,9 +147,6 @@ export async function POST(req: NextRequest) {
 
     if (patientError) {
       console.error('Error creating patient:', patientError)
-      // If patient creation fails, we should clean up the user record
-      await supabase.from('users').delete().eq('id', user.id)
-      
       return NextResponse.json({
         success: false,
         error: 'Failed to create patient record'
@@ -153,7 +159,7 @@ export async function POST(req: NextRequest) {
       success: true,
       message: 'Patient registration successful',
       data: {
-        user,
+        user: updatedUser || user,
         patient
       }
     })

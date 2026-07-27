@@ -1,11 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { supabase } from '@/lib/supabase'
+import { createClient } from '@/lib/supabase/server'
+import { UserService } from '@/services/userService'
 
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json()
     const {
-      clerkUserId,
+      authUserId,
       firstName,
       lastName,
       email,
@@ -20,11 +21,11 @@ export async function POST(req: NextRequest) {
       pincodeId
     } = body
 
-    console.log('Creating transport company registration for:', { email, clerkUserId, companyName })
+    console.log('Creating transport company registration for:', { email, authUserId, companyName })
 
     // Basic input validation (defense-in-depth; the client also validates).
     const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
-    if (typeof clerkUserId !== 'string' || !clerkUserId.startsWith('user_')) {
+    if (typeof authUserId !== 'string' || !authUserId.trim()) {
       return NextResponse.json(
         { success: false, error: 'Invalid registration request' },
         { status: 400 },
@@ -50,58 +51,67 @@ export async function POST(req: NextRequest) {
       )
     }
 
-    // Idempotency / anti-duplicate guard: if a user row already exists for this
-    // Clerk id or email, do not create a second one (the registration POST can be
-    // retried by the client, and the endpoint is unauthenticated).
-    const { data: existing } = await supabase
-      .from('users')
-      .select('id, clerk_user_id, email')
-      .or(`clerk_user_id.eq.${clerkUserId},email.eq.${email}`)
-      .maybeSingle()
-
-    if (existing) {
-      if (existing.clerk_user_id === clerkUserId) {
-        return NextResponse.json({
-          success: true,
-          message: 'Transport company already registered',
-          data: { user: existing },
-        })
-      }
+    // The handle_new_auth_user() DB trigger already created (and linked) the
+    // public.users row for this auth identity. Resolve it — do NOT insert a users
+    // row or set the role here (the trigger owns that).
+    const { data: user, error: lookupError } = await UserService.getUserByAuthId(authUserId)
+    if (lookupError) {
+      console.error('Error resolving user by auth id:', lookupError)
       return NextResponse.json(
-        { success: false, error: 'An account already exists for this email' },
-        { status: 409 },
+        { success: false, error: 'Failed to resolve user account' },
+        { status: 500 },
+      )
+    }
+    if (!user) {
+      return NextResponse.json(
+        { success: false, error: 'Account not found. Please try signing in again.' },
+        { status: 404 },
       )
     }
 
-    // Create user record
-    const { data: user, error: userError } = await supabase
-      .from('users')
-      .insert([
-        {
-          clerk_user_id: clerkUserId,
-          email,
-          first_name: firstName,
-          last_name: lastName,
-          full_name: `${firstName} ${lastName}`,
-          phone,
-          role: 'transport_company',
-          is_active: true
-        }
-      ])
-      .select()
-      .single()
+    const supabase = createClient()
+
+    // Idempotency / anti-duplicate guard: if a transport company profile already
+    // exists for this user, treat the (retried) registration as success.
+    const { data: existingCompany } = await supabase
+      .from('transport_companies')
+      .select('user_id')
+      .eq('user_id', user.id)
+      .maybeSingle()
+
+    if (existingCompany) {
+      return NextResponse.json({
+        success: true,
+        message: 'Transport company already registered',
+        data: { user, transportCompany: existingCompany },
+      })
+    }
+
+    // Patch profile fields onto the (trigger-created) users row. Never touches the
+    // role or any auth-identity column.
+    const profileUpdates: Record<string, any> = {
+      first_name: firstName,
+      last_name: lastName,
+      full_name: `${firstName} ${lastName}`,
+      phone,
+      is_active: true,
+    }
+
+    const { data: updatedUser, error: userError } = await UserService.updateUser(user.id, profileUpdates)
 
     if (userError) {
-      console.error('Error creating user:', userError)
+      console.error('Error updating user:', userError)
       return NextResponse.json({
         success: false,
-        error: 'Failed to create user record'
+        error: 'Failed to update user record'
       }, { status: 500 })
     }
 
-    console.log('✅ Created user:', user)
+    console.log('✅ Updated user:', updatedUser)
 
-    // Create transport company record
+    // Create transport company record. NOTE: unlike the old Clerk flow we do NOT
+    // delete the users row on failure — it is the auth identity, and deleting it
+    // would orphan the login.
     const { data: transportCompany, error: transportCompanyError } = await supabase
       .from('transport_companies')
       .insert([
@@ -123,9 +133,6 @@ export async function POST(req: NextRequest) {
 
     if (transportCompanyError) {
       console.error('Error creating transport company:', transportCompanyError)
-      // If transport company creation fails, we should clean up the user record
-      await supabase.from('users').delete().eq('id', user.id)
-      
       return NextResponse.json({
         success: false,
         error: 'Failed to create transport company record'
@@ -138,7 +145,7 @@ export async function POST(req: NextRequest) {
       success: true,
       message: 'Transport company registration successful',
       data: {
-        user,
+        user: updatedUser || user,
         transportCompany
       }
     })

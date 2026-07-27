@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { supabase } from '@/lib/supabase'
-import { createClerkUser } from '@/lib/clerk-user-creation'
-import { auth } from '@clerk/nextjs/server'
+import { createSupabaseAuthUser } from '@/lib/clerk-user-creation'
+import { getAuthedUser } from '@/lib/supabase/server'
 
 interface CSVTransportCompany {
   company_name: string
@@ -153,10 +153,10 @@ async function lookupLocationIds(record: CSVTransportCompany) {
 
 export async function POST(request: NextRequest) {
   try {
-    // Get current user for invitation tracking
-    const { userId: currentUserId } = await auth()
+    // Require an authenticated caller (invitation tracking gate).
+    const { user } = await getAuthedUser()
 
-    if (!currentUserId) {
+    if (!user) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
@@ -204,47 +204,37 @@ export async function POST(request: NextRequest) {
           continue
         }
 
-        // Create user directly in Clerk
-        const userCreationResult = await createClerkUser(
+        // Create the Supabase auth login. The handle_new_auth_user() trigger
+        // provisions the public.users row (role via app_metadata); do NOT insert a
+        // users row here or it double-inserts against the unique email.
+        const userCreationResult = await createSupabaseAuthUser(
           record.email.trim(),
           record.full_name.trim(),
           'transport_company',
           record.phone
         )
 
-        if (!userCreationResult.success) {
+        if (!userCreationResult.success || !userCreationResult.appUserId) {
           results.errors.push(`Failed to create user ${record.email}: ${userCreationResult.error}`)
           results.failed++
           continue
         }
+        const appUserId = userCreationResult.appUserId
+
+        // Fill in profile fields on the trigger-created users row.
+        await supabase
+          .from('users')
+          .update({ full_name: record.full_name.trim(), phone: record.phone || null })
+          .eq('id', appUserId)
 
         // Get location IDs
         const locationIds = await lookupLocationIds(record)
-
-        // Create user record in Supabase
-        const { data: newUser, error: userError } = await supabase
-          .from('users')
-          .insert({
-            clerk_user_id: userCreationResult.clerkUserId,
-            email: record.email.trim(),
-            full_name: record.full_name.trim(),
-            phone: record.phone || null,
-            role: 'transport_company'
-          })
-          .select()
-          .single()
-
-        if (userError || !newUser) {
-          results.errors.push(`Failed to create user record for ${record.email}: ${userError?.message}`)
-          results.failed++
-          continue
-        }
 
         // Create transport company record
         const { error: companyError } = await supabase
           .from('transport_companies')
           .insert({
-            user_id: newUser.id,
+            user_id: appUserId,
             company_name: record.company_name.trim(),
             address_line: record.address_line || null,
             registration_number: record.registration_number || null,

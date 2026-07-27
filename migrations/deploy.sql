@@ -134,6 +134,15 @@
 \i 99_updates/driver_documents_storage_bucket.sql
 -- users.onboarding_completed flag.
 \i 99_updates/add_users_onboarding_completed.sql
+-- Supabase Auth migration (Phase 1, additive): auth_user_id link column, the
+-- handle_new_auth_user() link-by-email trigger, and authenticated-scoped RLS
+-- policies added alongside the Clerk-era ones. Non-breaking. The destructive
+-- hardening (supabase_auth_rls_hardening.sql) is applied only at the final cutover.
+\i 99_updates/supabase_auth_migration.sql
+-- Terms & Conditions acceptance tracking: users.terms_* columns, the append-only
+-- terms_acceptances audit table, the current_terms_version config seed, and the
+-- record_terms_acceptance() RPC.
+\i 99_updates/terms_acceptance_tracking.sql
 
 -- =============================================
 -- DEPLOYMENT COMPLETE

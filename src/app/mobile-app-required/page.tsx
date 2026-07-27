@@ -1,17 +1,15 @@
 'use client'
 
-import { useUser } from '@clerk/nextjs'
-import { useRole } from '@/hooks/useRole'
+import { useAuth } from '@/components/auth/AuthProvider'
 import { MobileAppRedirect } from '@/components/auth/MobileAppRedirect'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Loader2 } from 'lucide-react'
 
 export default function MobileAppRequiredPage() {
-  const { user, isLoaded } = useUser()
-  const { role, loading } = useRole()
+  const { authUser, appUser, role, loading } = useAuth()
 
   // Show loading state
-  if (!isLoaded || loading) {
+  if (loading) {
     return (
       <div className="min-h-screen bg-gray-50 flex items-center justify-center">
         <Card className="max-w-md w-full">
@@ -32,7 +30,7 @@ export default function MobileAppRequiredPage() {
   }
 
   // If no user, redirect to sign-in (this should be handled by middleware)
-  if (!user) {
+  if (!authUser) {
     return (
       <div className="min-h-screen bg-gray-50 flex items-center justify-center">
         <Card className="max-w-md w-full">
@@ -73,8 +71,10 @@ export default function MobileAppRequiredPage() {
 
   // Only show mobile app redirect for patient and driver roles
   if (role === 'patient' || role === 'driver') {
-    const userName = user.firstName ? `${user.firstName} ${user.lastName || ''}`.trim() : user.emailAddresses[0]?.emailAddress
-    
+    const userName = appUser?.firstName
+      ? `${appUser.firstName} ${appUser.lastName || ''}`.trim()
+      : (appUser?.email ?? authUser.email)
+
     return <MobileAppRedirect role={role} userName={userName} />
   }
 

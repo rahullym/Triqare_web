@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { auth } from '@clerk/nextjs/server'
-import { UserService } from '@/services/userService'
+import { getAuthedUser } from '@/lib/supabase/server'
 import { supabase } from '@/lib/supabase'
 
 // GET /api/transport/sos-requests - Get SOS requests assigned to the transport company's drivers
@@ -11,18 +10,20 @@ export async function GET(request: NextRequest) {
     // Authenticate + authorize as a transport_company user. The previous ?test=true
     // bypass let unauthenticated callers read patient PII in production; it has been
     // removed (see middleware.ts — the matching middleware bypass is also gated).
-    const { userId } = await auth()
-    if (!userId) {
+    const { user, appUser } = await getAuthedUser()
+    if (!user) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
-    const { data: currentUser, error: userError } = await UserService.getUserByClerkId(userId)
-    if (userError || !currentUser) {
+    // appUser IS the caller's public.users row
+    if (!appUser) {
       return NextResponse.json({ error: 'User not found' }, { status: 404 })
     }
-    if (currentUser.role !== 'transport_company') {
+    if (appUser.role !== 'transport_company') {
       return NextResponse.json({ error: 'Forbidden - Transport company access required' }, { status: 403 })
     }
+
+    const currentUser: any = appUser
 
     // Parse additional query parameters
     const status = searchParams.get('status') || undefined

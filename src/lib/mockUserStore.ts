@@ -69,8 +69,9 @@ export class MockUserStore {
 
   // Store a user in the mock store
   static storeUser(user: DatabaseUser): void {
-    mockUserStore.set(user.clerk_user_id, user)
-    console.log(`Stored mock user: ${user.clerk_user_id} (${user.email})`)
+    const key = user.clerk_user_id || user.auth_user_id || user.id
+    mockUserStore.set(key, user)
+    console.log(`Stored mock user: ${key} (${user.email})`)
   }
 
   // Get a user by Clerk ID

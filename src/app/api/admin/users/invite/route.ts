@@ -1,33 +1,19 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { auth, clerkClient } from '@clerk/nextjs/server'
+import { requireAdmin } from '@/lib/auth/requireAdmin'
+import { createClient } from '@/lib/supabase/server'
+import { sendUserInvitation } from '@/lib/invitations'
 import { UserRole } from '@/types'
 
 // POST /api/admin/users/invite - Send invitation to a new user (admin only)
 export async function POST(request: NextRequest) {
   try {
-    const { userId: currentUserId } = await auth()
-    
-    if (!currentUserId) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-    }
-
-    // Get current user to check if they're admin
-    const clerk = await clerkClient()
-    const currentUser = await clerk.users.getUser(currentUserId)
-    const currentUserRole = currentUser.publicMetadata?.role as UserRole
-    
-    if (currentUserRole !== 'admin') {
-      return NextResponse.json({ error: 'Forbidden - Admin access required' }, { status: 403 })
-    }
+    const gate = await requireAdmin()
+    if (gate.error) return gate.error
 
     const body = await request.json()
-    const { email, role, redirectUrl } = body
+    const { email, role } = body
 
-    console.log('Received invitation request:', {
-      email,
-      role,
-      redirectUrl
-    })
+    console.log('Received invitation request:', { email, role })
 
     // Validate required fields
     if (!email || !role) {
@@ -39,70 +25,54 @@ export async function POST(request: NextRequest) {
     // Validate role
     const validRoles: UserRole[] = ['admin', 'ert', 'transport_company', 'patient', 'driver']
     if (!validRoles.includes(role)) {
-      return NextResponse.json({ 
-        error: 'Invalid role. Must be one of: ' + validRoles.join(', ') 
+      return NextResponse.json({
+        error: 'Invalid role. Must be one of: ' + validRoles.join(', ')
       }, { status: 400 })
     }
 
     // Validate email format
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
     if (!emailRegex.test(email)) {
-      return NextResponse.json({ 
-        error: 'Invalid email format' 
+      return NextResponse.json({
+        error: 'Invalid email format'
       }, { status: 400 })
     }
 
-    try {
-      // Create invitation in Clerk
-      const invitation = await clerk.invitations.createInvitation({
-        emailAddress: email,
-        redirectUrl: redirectUrl || `${process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'}/sign-up`,
-        publicMetadata: {
-          role: role,
-          invitedBy: currentUserId,
-          invitedAt: new Date().toISOString()
-        }
-      })
+    // Send the invitation via Supabase Auth. The helper creates the (unconfirmed)
+    // auth user, emails the invite link, and applies the intended role.
+    const result = await sendUserInvitation(email, role as UserRole, gate.appUser.id)
 
-      console.log('Invitation created successfully:', {
-        id: invitation.id,
-        email: invitation.emailAddress,
-        status: invitation.status
-      })
+    if (!result.success) {
+      const message = result.error || 'Unknown error'
+      console.error('Invitation error:', message)
 
-      return NextResponse.json({
-        success: true,
-        invitation: {
-          id: invitation.id,
-          email: invitation.emailAddress,
-          status: invitation.status,
-          role: role,
-          createdAt: invitation.createdAt
-        },
-        message: `Invitation sent successfully to ${email}. They will receive an email with a link to set up their account.`
-      })
-
-    } catch (clerkError: any) {
-      console.error('Clerk invitation error:', clerkError)
-
-      // Handle email already exists error
-      if (clerkError.message?.includes('already exists') || clerkError.message?.includes('duplicate')) {
+      // Supabase returns an error when the user already exists / was already invited.
+      if (/already|exists|registered|duplicate/i.test(message)) {
         return NextResponse.json({
           error: 'A user with this email address already exists or has a pending invitation'
         }, { status: 409 })
       }
 
-      // Handle unprocessable entity (422) - usually validation errors
-      if (clerkError.status === 422) {
-        return NextResponse.json({
-          error: `Failed to create invitation: ${clerkError.message || 'Invalid data provided'}`
-        }, { status: 400 })
-      }
-
       return NextResponse.json({
-        error: `Failed to create invitation: ${clerkError.message || 'Unknown error'}`
+        error: `Failed to create invitation: ${message}`
       }, { status: 500 })
     }
+
+    console.log('Invitation created successfully:', {
+      id: result.invitationId,
+      email: result.email,
+    })
+
+    return NextResponse.json({
+      success: true,
+      invitation: {
+        id: result.invitationId,
+        email: result.email,
+        status: 'pending',
+        role,
+      },
+      message: `Invitation sent successfully to ${email}. They will receive an email with a link to set up their account.`
+    })
 
   } catch (error) {
     console.error('Error creating invitation:', error)
@@ -111,39 +81,36 @@ export async function POST(request: NextRequest) {
 }
 
 // GET /api/admin/users/invite - List all pending invitations (admin only)
-export async function GET(request: NextRequest) {
+export async function GET(_request: NextRequest) {
   try {
-    const { userId: currentUserId } = await auth()
-    
-    if (!currentUserId) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    const gate = await requireAdmin()
+    if (gate.error) return gate.error
+
+    // "Pending invitations" are Supabase auth users who were invited but have not
+    // yet confirmed their email (i.e. not yet set a password / signed in).
+    const supabase = createClient()
+    const { data, error } = await supabase.auth.admin.listUsers({ page: 1, perPage: 1000 })
+
+    if (error) {
+      console.error('Error fetching invitations:', error)
+      return NextResponse.json({ error: error.message }, { status: 500 })
     }
 
-    // Get current user to check if they're admin
-    const clerk = await clerkClient()
-    const currentUser = await clerk.users.getUser(currentUserId)
-    const currentUserRole = currentUser.publicMetadata?.role as UserRole
-
-    if (currentUserRole !== 'admin') {
-      return NextResponse.json({ error: 'Forbidden - Admin access required' }, { status: 403 })
-    }
-
-    // Get all pending invitations
-    const invitations = await clerk.invitations.getInvitationList({
-      status: 'pending'
-    })
+    const invitations = (data?.users || [])
+      .filter((u) => u.invited_at && !u.email_confirmed_at)
+      .map((u) => ({
+        id: u.id,
+        email: u.email,
+        status: 'pending',
+        role: (u.app_metadata as Record<string, any>)?.role,
+        invitedBy: (u.user_metadata as Record<string, any>)?.invited_by,
+        invitedAt: (u.user_metadata as Record<string, any>)?.invited_at || u.invited_at,
+        createdAt: u.created_at,
+      }))
 
     return NextResponse.json({
       success: true,
-      invitations: invitations.data.map(inv => ({
-        id: inv.id,
-        email: inv.emailAddress,
-        status: inv.status,
-        role: inv.publicMetadata?.role,
-        invitedBy: inv.publicMetadata?.invitedBy,
-        invitedAt: inv.publicMetadata?.invitedAt,
-        createdAt: inv.createdAt
-      }))
+      invitations,
     })
 
   } catch (error) {
@@ -151,4 +118,3 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
 }
-

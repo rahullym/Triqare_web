@@ -1,8 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { supabase } from '@/lib/supabase'
 import { sendUserInvitation } from '@/lib/invitations'
-import { auth } from '@clerk/nextjs/server'
-import { UserService } from '@/services/userService'
+import { getAuthedUser } from '@/lib/supabase/server'
 
 interface CSVDriver {
   full_name: string
@@ -112,22 +111,22 @@ async function lookupLocationIds(record: CSVDriver) {
 export async function POST(request: NextRequest) {
   try {
     // Get current user (must be transport company)
-    const { userId: clerkUserId } = await auth()
+    const { user, appUser } = await getAuthedUser()
 
-    if (!clerkUserId) {
+    if (!user) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
-    // Get user from database
-    const { data: currentUser, error: userError } = await UserService.getUserByClerkId(clerkUserId)
-
-    if (userError || !currentUser) {
+    // appUser IS the caller's public.users row
+    if (!appUser) {
       return NextResponse.json({ error: 'User not found' }, { status: 404 })
     }
 
-    if (currentUser.role !== 'transport_company') {
+    if (appUser.role !== 'transport_company') {
       return NextResponse.json({ error: 'Only transport companies can upload drivers' }, { status: 403 })
     }
+
+    const currentUser: any = appUser
 
     // Verify transport company exists
     const { data: transportCompany, error: companyError } = await supabase

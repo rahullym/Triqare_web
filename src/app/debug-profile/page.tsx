@@ -1,23 +1,23 @@
 'use client'
 
-import { useUser } from '@clerk/nextjs'
+import { useAuth } from '@/components/auth/AuthProvider'
 import { useEffect, useState } from 'react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 
 export default function DebugProfilePage() {
-  const { user, isLoaded } = useUser()
+  const { authUser, appUser, loading } = useAuth()
   const [profileData, setProfileData] = useState<any>(null)
   const [error, setError] = useState<string | null>(null)
-  const [loading, setLoading] = useState(false)
+  const [apiLoading, setApiLoading] = useState(false)
 
   const testProfileAPI = async () => {
-    if (!user) return
+    if (!authUser) return
 
-    setLoading(true)
+    setApiLoading(true)
     setError(null)
 
     try {
-      console.log('Testing profile API with user:', user.id)
+      console.log('Testing profile API with user:', authUser.id)
       
       const response = await fetch('/api/profile')
       const data = await response.json()
@@ -33,21 +33,21 @@ export default function DebugProfilePage() {
       console.error('Profile API exception:', err)
       setError(err instanceof Error ? err.message : 'Unknown error')
     } finally {
-      setLoading(false)
+      setApiLoading(false)
     }
   }
 
   useEffect(() => {
-    if (isLoaded && user) {
+    if (!loading && authUser) {
       testProfileAPI()
     }
-  }, [isLoaded, user])
+  }, [loading, authUser])
 
-  if (!isLoaded) {
-    return <div className="p-6">Loading Clerk...</div>
+  if (loading) {
+    return <div className="p-6">Loading...</div>
   }
 
-  if (!user) {
+  if (!authUser) {
     return (
       <div className="p-6">
         <Card>
@@ -73,14 +73,15 @@ export default function DebugProfilePage() {
         </CardHeader>
         <CardContent className="space-y-4">
           <div>
-            <h3 className="font-semibold">Clerk User Info:</h3>
+            <h3 className="font-semibold">Auth User Info:</h3>
             <pre className="bg-gray-100 p-2 rounded text-sm overflow-auto">
               {JSON.stringify({
-                id: user.id,
-                email: user.primaryEmailAddress?.emailAddress,
-                firstName: user.firstName,
-                lastName: user.lastName,
-                imageUrl: user.imageUrl
+                authUserId: authUser.id,
+                appUserId: appUser?.id,
+                email: appUser?.email ?? authUser.email,
+                firstName: appUser?.firstName,
+                lastName: appUser?.lastName,
+                role: appUser?.role
               }, null, 2)}
             </pre>
           </div>
@@ -108,12 +109,12 @@ export default function DebugProfilePage() {
 
           <div>
             <h3 className="font-semibold">Profile API Test:</h3>
-            <button 
+            <button
               onClick={testProfileAPI}
-              disabled={loading}
+              disabled={apiLoading}
               className="bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600 disabled:opacity-50"
             >
-              {loading ? 'Testing...' : 'Test Profile API'}
+              {apiLoading ? 'Testing...' : 'Test Profile API'}
             </button>
           </div>
 

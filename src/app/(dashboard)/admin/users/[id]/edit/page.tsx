@@ -8,19 +8,37 @@ import { Label } from '@/components/ui/label'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Badge } from '@/components/ui/badge'
-import { 
-  ArrowLeft, 
-  Save, 
-  User, 
-  Mail, 
-  Shield, 
-  Loader2, 
-  CheckCircle, 
+import {
+  ArrowLeft,
+  Save,
+  User,
+  Mail,
+  Shield,
+  Loader2,
+  CheckCircle,
   AlertCircle,
-  Trash2
+  Trash2,
+  Users,
+  LifeBuoy
 } from 'lucide-react'
 import Link from 'next/link'
 import { DatabaseUser } from '@/lib/supabase'
+import { UserTypeBadges } from '@/components/admin/UserTypeBadges'
+import { UserTermsCard } from '@/components/admin/UserTermsCard'
+
+interface LinkedPatient {
+  id: string
+  name: string | null
+  email: string | null
+  relationship: string | null
+}
+
+interface UserClassification {
+  is_patient: boolean
+  is_emergency_contact: boolean
+  account_type: string
+  linked_patients: LinkedPatient[]
+}
 
 export default function AdminUserEditPage() {
   const params = useParams()
@@ -28,6 +46,7 @@ export default function AdminUserEditPage() {
   const userId = params.id as string
 
   const [user, setUser] = useState<DatabaseUser | null>(null)
+  const [classification, setClassification] = useState<UserClassification | null>(null)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [deleting, setDeleting] = useState(false)
@@ -76,6 +95,27 @@ export default function AdminUserEditPage() {
 
     if (userId) {
       loadUser()
+    }
+  }, [userId])
+
+  // Load user-type classification (flags + linked patients). Non-fatal: the page
+  // still works if this fails, it just omits the User Type card.
+  useEffect(() => {
+    if (!userId) return
+    let cancelled = false
+    const loadClassification = async () => {
+      try {
+        const res = await fetch(`/api/admin/users/${userId}/classification`)
+        if (!res.ok) return
+        const data: UserClassification = await res.json()
+        if (!cancelled) setClassification(data)
+      } catch {
+        // ignore — classification is supplementary
+      }
+    }
+    loadClassification()
+    return () => {
+      cancelled = true
     }
   }, [userId])
 
@@ -224,10 +264,16 @@ export default function AdminUserEditPage() {
           </div>
         </div>
         {user && (
-          <div className="flex items-center space-x-2">
+          <div className="flex items-center flex-wrap gap-2">
             <Badge className={getRoleBadgeColor(user.role)}>
               {getRoleDisplayName(user.role)}
             </Badge>
+            {classification && (
+              <UserTypeBadges
+                is_patient={classification.is_patient}
+                is_emergency_contact={classification.is_emergency_contact}
+              />
+            )}
             <span className="text-sm text-gray-500">
               ID: {user.id.slice(0, 8)}...
             </span>
@@ -323,6 +369,79 @@ export default function AdminUserEditPage() {
             </div>
           </CardContent>
         </Card>
+
+        {/* User Type Classification */}
+        {classification && (
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center">
+                <Users className="h-5 w-5 mr-2" />
+                User Type
+              </CardTitle>
+              <CardDescription>
+                Whether this account is a Patient, an Emergency Contact, or both —
+                derived from the backend account flags.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="flex items-center gap-2">
+                <UserTypeBadges
+                  is_patient={classification.is_patient}
+                  is_emergency_contact={classification.is_emergency_contact}
+                  showNone
+                />
+              </div>
+
+              {!classification.is_patient && !classification.is_emergency_contact && (
+                <p className="text-sm text-gray-500">
+                  This account is neither a patient nor an emergency contact
+                  (e.g. an administrator or staff role).
+                </p>
+              )}
+
+              {/* Patients this person is an emergency contact for */}
+              {classification.is_emergency_contact && (
+                <div className="rounded-lg border bg-gray-50 p-4">
+                  <div className="flex items-center text-sm font-medium text-gray-700 mb-2">
+                    <LifeBuoy className="h-4 w-4 mr-1.5 text-teal-600" />
+                    Emergency contact for
+                  </div>
+                  {classification.linked_patients.length === 0 ? (
+                    <p className="text-sm text-gray-500">
+                      No linked patient found. This account was invited as an
+                      emergency contact but is not currently matched to a
+                      patient&apos;s contact list.
+                    </p>
+                  ) : (
+                    <ul className="space-y-2">
+                      {classification.linked_patients.map((p) => (
+                        <li
+                          key={p.id}
+                          className="flex items-center justify-between text-sm"
+                        >
+                          <Link
+                            href={`/admin/users/${p.id}/edit`}
+                            className="font-medium text-blue-600 hover:underline"
+                          >
+                            {p.name || p.email || 'Unknown patient'}
+                          </Link>
+                          {p.relationship && (
+                            <Badge className="bg-gray-100 text-gray-700">
+                              {p.relationship}
+                            </Badge>
+                          )}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        )}
+
+        {/* Terms & Conditions status + acceptance history (backend-sourced) */}
+        {userId && <UserTermsCard userId={userId} />}
 
         {/* Actions */}
         <div className="flex justify-between">

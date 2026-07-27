@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { auth, clerkClient } from '@clerk/nextjs/server'
+import { requireAdmin } from '@/lib/auth/requireAdmin'
 import { createClient } from '@/lib/supabase/server'
 
 // Parse CSV content
@@ -42,20 +42,9 @@ function parseCSV(csvText: string): any[] {
 
 export async function POST(request: NextRequest) {
   try {
-    // Check authentication
-    const { userId } = await auth()
-    if (!userId) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-    }
-
-    // Check if user is admin
-    const client = await clerkClient()
-    const user = await client.users.getUser(userId)
-    const userRole = user.publicMetadata?.role
-    
-    if (userRole !== 'admin') {
-      return NextResponse.json({ error: 'Forbidden - Admin access required' }, { status: 403 })
-    }
+    // Check authentication + admin authorization
+    const gate = await requireAdmin()
+    if (gate.error) return gate.error
 
     const formData = await request.formData()
     const file = formData.get('file') as File

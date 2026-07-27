@@ -2,19 +2,17 @@
 
 import { useEffect } from 'react'
 import { useRouter } from 'next/navigation'
-import { useUser } from '@clerk/nextjs'
-import { useRole } from '@/hooks/useRole'
+import { useAuth } from '@/components/auth/AuthProvider'
 import { Card, CardContent } from '@/components/ui/card'
 import { Loader2 } from 'lucide-react'
 
 export default function ProfilePage() {
   const router = useRouter()
-  const { user, isLoaded } = useUser()
-  const { role, loading: roleLoading } = useRole()
+  const { authUser, role, loading: roleLoading } = useAuth()
   // Redirect to role-specific profile page
   useEffect(() => {
-    if (!roleLoading && isLoaded) {
-      if (!user) {
+    if (!roleLoading) {
+      if (!authUser) {
         router.push('/sign-in')
         return
       }
@@ -35,10 +33,10 @@ export default function ProfilePage() {
         }
       }
     }
-  }, [role, roleLoading, isLoaded, user, router])
+  }, [role, roleLoading, authUser, router])
 
   // Show loading state while redirecting
-  if (roleLoading || !isLoaded) {
+  if (roleLoading) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex items-center justify-center">
         <Card className="w-full max-w-md">
@@ -57,9 +55,9 @@ export default function ProfilePage() {
       <Card className="w-full max-w-md">
         <CardContent className="pt-6 text-center">
           <p className="text-gray-600 mb-4">
-            {!user ? 'Please sign in to view your profile.' : 'Unable to determine your role. Please contact support.'}
+            {!authUser ? 'Please sign in to view your profile.' : 'Unable to determine your role. Please contact support.'}
           </p>
-          {!user && (
+          {!authUser && (
             <button
               onClick={() => router.push('/sign-in')}
               className="text-blue-600 hover:text-blue-700 underline"

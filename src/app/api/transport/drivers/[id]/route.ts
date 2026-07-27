@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { auth } from '@clerk/nextjs/server'
+import { getAuthedUser } from '@/lib/supabase/server'
 import { UserService } from '@/services/userService'
 import { TransportCompanyService } from '@/services/transportCompanyService'
 import { supabase } from '@/lib/supabase'
@@ -27,23 +27,22 @@ export async function GET(
       }
       currentUser = testUser
     } else {
-      const { userId } = await auth()
-      if (!userId) {
+      const { user, appUser } = await getAuthedUser()
+      if (!user) {
         return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
       }
 
-      // Get current user
-      const { data: user, error: userError } = await UserService.getUserById(userId)
-      if (userError || !user) {
+      // appUser IS the caller's public.users row
+      if (!appUser) {
         return NextResponse.json({ error: 'User not found' }, { status: 404 })
       }
 
       // Check if user is transport company
-      if (user.role !== 'transport_company') {
+      if (appUser.role !== 'transport_company') {
         return NextResponse.json({ error: 'Access denied. Transport company role required.' }, { status: 403 })
       }
 
-      currentUser = user
+      currentUser = appUser
     }
 
     // Get driver by ID with user information
@@ -117,23 +116,22 @@ export async function DELETE(
       }
       currentUser = testUser
     } else {
-      const { userId } = await auth()
-      if (!userId) {
+      const { user, appUser } = await getAuthedUser()
+      if (!user) {
         return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
       }
 
-      // Get current user
-      const { data: user, error: userError } = await UserService.getUserById(userId)
-      if (userError || !user) {
+      // appUser IS the caller's public.users row
+      if (!appUser) {
         return NextResponse.json({ error: 'User not found' }, { status: 404 })
       }
 
       // Check if user is transport company
-      if (user.role !== 'transport_company') {
+      if (appUser.role !== 'transport_company') {
         return NextResponse.json({ error: 'Access denied. Transport company role required.' }, { status: 403 })
       }
 
-      currentUser = user
+      currentUser = appUser
     }
 
     // Get driver by ID first to verify ownership
@@ -205,23 +203,22 @@ export async function PUT(
       }
       currentUser = testUser
     } else {
-      const { userId } = await auth()
-      if (!userId) {
+      const { user, appUser } = await getAuthedUser()
+      if (!user) {
         return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
       }
 
-      // Get current user
-      const { data: user, error: userError } = await UserService.getUserById(userId)
-      if (userError || !user) {
+      // appUser IS the caller's public.users row
+      if (!appUser) {
         return NextResponse.json({ error: 'User not found' }, { status: 404 })
       }
 
       // Check if user is transport company
-      if (user.role !== 'transport_company') {
+      if (appUser.role !== 'transport_company') {
         return NextResponse.json({ error: 'Access denied. Transport company role required.' }, { status: 403 })
       }
 
-      currentUser = user
+      currentUser = appUser
     }
 
     // Get existing driver to verify ownership

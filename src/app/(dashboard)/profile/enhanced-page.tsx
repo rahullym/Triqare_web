@@ -1,7 +1,8 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { useUser } from '@clerk/nextjs'
+import { useAuth } from '@/components/auth/AuthProvider'
+import { getBrowserSupabase } from '@/lib/supabase/browser'
 import { useRole } from '@/hooks/useRole'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -12,16 +13,16 @@ import { Badge } from '@/components/ui/badge'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { Separator } from '@/components/ui/separator'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { 
-  User, 
-  Mail, 
-  Phone, 
-  MapPin, 
-  Calendar, 
-  Shield, 
-  Edit3, 
-  Save, 
-  X, 
+import {
+  User,
+  Mail,
+  Phone,
+  MapPin,
+  Calendar,
+  Shield,
+  Edit3,
+  Save,
+  X,
   Camera,
   Database,
   RefreshCw,
@@ -30,18 +31,16 @@ import {
   AlertTriangle
 } from 'lucide-react'
 import { toast } from 'sonner'
-import { UserService } from '@/services/userService'
 import { DatabaseUser } from '@/lib/supabase'
 
 export default function EnhancedProfilePage() {
-  const { user, isLoaded } = useUser()
+  const { authUser, loading: authLoading } = useAuth()
   const { role, loading: roleLoading } = useRole()
   const [isEditing, setIsEditing] = useState(false)
   const [saving, setSaving] = useState(false)
-  const [syncing, setSyncing] = useState(false)
   const [dbUser, setDbUser] = useState<DatabaseUser | null>(null)
   const [loadingDbUser, setLoadingDbUser] = useState(true)
-  
+
   // Enhanced form state
   const [formData, setFormData] = useState({
     firstName: '',
@@ -67,43 +66,54 @@ export default function EnhancedProfilePage() {
     employeeId: '',
   })
 
-  // Load database user profile
+  // Populate the form from a database user row
+  const populateForm = (data: DatabaseUser) => {
+    setFormData({
+      firstName: data.first_name || '',
+      lastName: data.last_name || '',
+      phone: data.phone || '',
+      bio: data.bio || '',
+      dateOfBirth: data.date_of_birth || '',
+      gender: data.gender || '',
+      address: data.address || '',
+      city: data.city || '',
+      state: data.state || '',
+      zipCode: data.zip_code || '',
+      country: data.country || 'United States',
+      emergencyContactName: data.emergency_contact_name || '',
+      emergencyContactPhone: data.emergency_contact_phone || '',
+      emergencyContactRelationship: data.emergency_contact_relationship || '',
+      medicalConditions: data.medical_conditions || '',
+      allergies: data.allergies || '',
+      medications: data.medications || '',
+      bloodType: data.blood_type || '',
+      department: data.department || '',
+      position: data.position || '',
+      employeeId: data.employee_id || '',
+    })
+  }
+
+  // Load the signed-in user's database profile (RLS scopes this to their own row).
   const loadDbUser = async () => {
-    if (!user?.id) return
-    
+    if (!authUser?.id) return
+
     setLoadingDbUser(true)
     try {
-      const { data, error } = await UserService.getUserByClerkId(user.id)
+      const supabase = getBrowserSupabase()
+      const { data, error } = await supabase
+        .from('users')
+        .select('*')
+        .eq('auth_user_id', authUser.id)
+        .maybeSingle()
+
       if (error) {
         console.error('Error loading database user:', error)
         toast.error('Failed to load profile data')
       } else {
-        setDbUser(data)
-        if (data) {
-          // Populate form with database data
-          setFormData({
-            firstName: data.first_name || '',
-            lastName: data.last_name || '',
-            phone: data.phone || '',
-            bio: data.bio || '',
-            dateOfBirth: data.date_of_birth || '',
-            gender: data.gender || '',
-            address: data.address || '',
-            city: data.city || '',
-            state: data.state || '',
-            zipCode: data.zip_code || '',
-            country: data.country || 'United States',
-            emergencyContactName: data.emergency_contact_name || '',
-            emergencyContactPhone: data.emergency_contact_phone || '',
-            emergencyContactRelationship: data.emergency_contact_relationship || '',
-            medicalConditions: data.medical_conditions || '',
-            allergies: data.allergies || '',
-            medications: data.medications || '',
-            bloodType: data.blood_type || '',
-            department: data.department || '',
-            position: data.position || '',
-            employeeId: data.employee_id || '',
-          })
+        const profile = (data as DatabaseUser | null)
+        setDbUser(profile)
+        if (profile) {
+          populateForm(profile)
         }
       }
     } catch (error) {
@@ -114,22 +124,16 @@ export default function EnhancedProfilePage() {
     }
   }
 
-  // Initialize form data when user loads
+  // Load the profile once the auth session has resolved.
   useEffect(() => {
-    if (user && isLoaded) {
-      // First populate with Clerk data
-      setFormData(prev => ({
-        ...prev,
-        firstName: user.firstName || '',
-        lastName: user.lastName || '',
-        phone: user.phoneNumbers?.[0]?.phoneNumber || '',
-        bio: user.publicMetadata?.bio as string || '',
-      }))
-      
-      // Then load database data
+    if (authLoading) return
+    if (authUser) {
       loadDbUser()
+    } else {
+      setLoadingDbUser(false)
     }
-  }, [user, isLoaded])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [authUser, authLoading])
 
   const handleInputChange = (field: string, value: string) => {
     setFormData(prev => ({
@@ -138,107 +142,44 @@ export default function EnhancedProfilePage() {
     }))
   }
 
-  const syncToDatabase = async () => {
-    if (!user) return
-    
-    setSyncing(true)
-    try {
-      const { data, error } = await UserService.syncUserFromClerk({
-        id: user.id,
-        emailAddresses: user.emailAddresses,
-        firstName: user.firstName,
-        lastName: user.lastName,
-        imageUrl: user.imageUrl,
-        lastSignInAt: user.lastSignInAt?.getTime(),
-        createdAt: user.createdAt?.getTime(),
-        publicMetadata: user.publicMetadata
-      })
-
-      if (error) {
-        toast.error(`Failed to sync to database: ${error}`)
-      } else {
-        setDbUser(data)
-        toast.success('Profile synced to database successfully!')
-        await loadDbUser() // Reload to get fresh data
-      }
-    } catch (error) {
-      console.error('Error syncing to database:', error)
-      toast.error('Failed to sync profile to database')
-    } finally {
-      setSyncing(false)
-    }
-  }
-
   const handleSave = async () => {
-    if (!user) return
+    if (!authUser || !dbUser) return
 
     setSaving(true)
     try {
-      // Update Clerk user
-      if (formData.firstName !== user.firstName) {
-        await user.update({
-          firstName: formData.firstName,
-        })
-      }
-
-      if (formData.lastName !== user.lastName) {
-        await user.update({
-          lastName: formData.lastName,
-        })
-      }
-
-      // Update phone number
-      const currentPhone = user.phoneNumbers?.[0]?.phoneNumber || ''
-      if (formData.phone !== currentPhone) {
-        if (formData.phone) {
-          // Remove existing phone number if any
-          if (user.phoneNumbers.length > 0) {
-            await user.phoneNumbers[0].destroy()
-          }
-          // Create new phone number
-          await user.createPhoneNumber({ phoneNumber: formData.phone })
-        }
-      }
-
-      // Update bio in Clerk unsafe metadata (since publicMetadata is not available in user.update)
-      await user.update({
-        unsafeMetadata: {
-          ...user.unsafeMetadata,
-          bio: formData.bio
-        }
-      })
-
-      // Update database user if exists
-      if (dbUser) {
-        const { error } = await UserService.updateUser(dbUser.id, {
+      const supabase = getBrowserSupabase()
+      const { error } = await supabase
+        .from('users')
+        .update({
           first_name: formData.firstName,
           last_name: formData.lastName,
           full_name: [formData.firstName, formData.lastName].filter(Boolean).join(' '),
           phone: formData.phone,
           bio: formData.bio,
-          date_of_birth: formData.dateOfBirth || undefined,
-          gender: formData.gender || undefined,
-          address: formData.address || undefined,
-          city: formData.city || undefined,
-          state: formData.state || undefined,
-          zip_code: formData.zipCode || undefined,
-          country: formData.country || undefined,
-          emergency_contact_name: formData.emergencyContactName || undefined,
-          emergency_contact_phone: formData.emergencyContactPhone || undefined,
-          emergency_contact_relationship: formData.emergencyContactRelationship || undefined,
-          medical_conditions: formData.medicalConditions || undefined,
-          allergies: formData.allergies || undefined,
-          medications: formData.medications || undefined,
-          blood_type: formData.bloodType || undefined,
-          department: formData.department || undefined,
-          position: formData.position || undefined,
-          employee_id: formData.employeeId || undefined,
+          date_of_birth: formData.dateOfBirth || null,
+          gender: formData.gender || null,
+          address: formData.address || null,
+          city: formData.city || null,
+          state: formData.state || null,
+          zip_code: formData.zipCode || null,
+          country: formData.country || null,
+          emergency_contact_name: formData.emergencyContactName || null,
+          emergency_contact_phone: formData.emergencyContactPhone || null,
+          emergency_contact_relationship: formData.emergencyContactRelationship || null,
+          medical_conditions: formData.medicalConditions || null,
+          allergies: formData.allergies || null,
+          medications: formData.medications || null,
+          blood_type: formData.bloodType || null,
+          department: formData.department || null,
+          position: formData.position || null,
+          employee_id: formData.employeeId || null,
+          updated_at: new Date().toISOString(),
         })
+        .eq('id', dbUser.id)
 
-        if (error) {
-          toast.error(`Failed to update database profile: ${error}`)
-          return
-        }
+      if (error) {
+        toast.error(`Failed to update profile: ${error.message}`)
+        return
       }
 
       toast.success('Profile updated successfully!')
@@ -253,36 +194,14 @@ export default function EnhancedProfilePage() {
   }
 
   const handleCancel = () => {
-    // Reset form data
-    if (user) {
-      setFormData({
-        firstName: user.firstName || '',
-        lastName: user.lastName || '',
-        phone: user.phoneNumbers?.[0]?.phoneNumber || '',
-        bio: user.publicMetadata?.bio as string || '',
-        dateOfBirth: dbUser?.date_of_birth || '',
-        gender: dbUser?.gender || '',
-        address: dbUser?.address || '',
-        city: dbUser?.city || '',
-        state: dbUser?.state || '',
-        zipCode: dbUser?.zip_code || '',
-        country: dbUser?.country || 'United States',
-        emergencyContactName: dbUser?.emergency_contact_name || '',
-        emergencyContactPhone: dbUser?.emergency_contact_phone || '',
-        emergencyContactRelationship: dbUser?.emergency_contact_relationship || '',
-        medicalConditions: dbUser?.medical_conditions || '',
-        allergies: dbUser?.allergies || '',
-        medications: dbUser?.medications || '',
-        bloodType: dbUser?.blood_type || '',
-        department: dbUser?.department || '',
-        position: dbUser?.position || '',
-        employeeId: dbUser?.employee_id || '',
-      })
+    // Reset form data to the last-loaded database values
+    if (dbUser) {
+      populateForm(dbUser)
     }
     setIsEditing(false)
   }
 
-  if (!isLoaded || roleLoading || loadingDbUser) {
+  if (authLoading || roleLoading || loadingDbUser) {
     return (
       <div className="flex items-center justify-center min-h-screen">
         <div className="text-center">
@@ -293,7 +212,7 @@ export default function EnhancedProfilePage() {
     )
   }
 
-  if (!user) {
+  if (!authUser) {
     return (
       <div className="flex items-center justify-center min-h-screen">
         <div className="text-center">
@@ -337,21 +256,6 @@ export default function EnhancedProfilePage() {
                 <Database className="h-5 w-5" />
                 <span>Profile Data Status</span>
               </div>
-              {!dbUser && (
-                <Button onClick={syncToDatabase} disabled={syncing} size="sm">
-                  {syncing ? (
-                    <>
-                      <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
-                      Syncing...
-                    </>
-                  ) : (
-                    <>
-                      <RefreshCw className="h-4 w-4 mr-2" />
-                      Sync to Database
-                    </>
-                  )}
-                </Button>
-              )}
             </CardTitle>
           </CardHeader>
           <CardContent>
@@ -362,7 +266,7 @@ export default function EnhancedProfilePage() {
                 <div className={`w-2 h-2 rounded-full ${
                   dbUser ? 'bg-green-500' : 'bg-yellow-500'
                 }`}></div>
-                <span>{dbUser ? 'Synced with Database' : 'Clerk Only'}</span>
+                <span>{dbUser ? 'Profile loaded from database' : 'No database profile found'}</span>
               </div>
               {dbUser && (
                 <p className="text-sm text-gray-600">

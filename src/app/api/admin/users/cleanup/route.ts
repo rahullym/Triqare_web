@@ -1,36 +1,19 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { auth } from '@clerk/nextjs/server'
-import { createClerkClient } from '@clerk/nextjs/server'
-import { UserRole } from '@/types'
+import { requireAdmin } from '@/lib/auth/requireAdmin'
 import { UserService } from '@/services/userService'
 
-const clerkClient = createClerkClient({
-  secretKey: process.env.CLERK_SECRET_KEY,
-})
-
 // POST /api/admin/users/cleanup - Clean up duplicate users in database (admin only)
-export async function POST(request: NextRequest) {
+export async function POST(_request: NextRequest) {
   try {
-    const { userId: currentUserId } = await auth()
-    
-    if (!currentUserId) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-    }
-
-    // Get current user to check if they're admin
-    const currentUser = await clerkClient.users.getUser(currentUserId)
-    const currentUserRole = currentUser.publicMetadata?.role as UserRole
-    
-    if (currentUserRole !== 'admin') {
-      return NextResponse.json({ error: 'Forbidden - Admin access required' }, { status: 403 })
-    }
+    const gate = await requireAdmin()
+    if (gate.error) return gate.error
 
     // Clean up duplicate users
     const { success, error, cleaned } = await UserService.cleanupDuplicateUsers()
 
     if (!success) {
-      return NextResponse.json({ 
-        error: `Failed to cleanup duplicates: ${error}` 
+      return NextResponse.json({
+        error: `Failed to cleanup duplicates: ${error}`
       }, { status: 500 })
     }
 
@@ -47,28 +30,17 @@ export async function POST(request: NextRequest) {
 }
 
 // GET /api/admin/users/cleanup - Get duplicate users information
-export async function GET(request: NextRequest) {
+export async function GET(_request: NextRequest) {
   try {
-    const { userId: currentUserId } = await auth()
-    
-    if (!currentUserId) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-    }
-
-    // Get current user to check if they're admin
-    const currentUser = await clerkClient.users.getUser(currentUserId)
-    const currentUserRole = currentUser.publicMetadata?.role as UserRole
-    
-    if (currentUserRole !== 'admin') {
-      return NextResponse.json({ error: 'Forbidden - Admin access required' }, { status: 403 })
-    }
+    const gate = await requireAdmin()
+    if (gate.error) return gate.error
 
     // Find duplicate users
     const { data: duplicates, error } = await UserService.findDuplicateUsers()
 
     if (error) {
-      return NextResponse.json({ 
-        error: `Failed to find duplicates: ${error}` 
+      return NextResponse.json({
+        error: `Failed to find duplicates: ${error}`
       }, { status: 500 })
     }
 

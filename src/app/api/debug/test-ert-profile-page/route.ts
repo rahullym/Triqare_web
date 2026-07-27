@@ -1,14 +1,19 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { UserService } from '@/services/userService'
-import { createClerkClient } from '@clerk/nextjs/server'
+import { requireAdmin } from '@/lib/auth/requireAdmin'
 
 export async function GET(request: NextRequest) {
   try {
+    // This debug endpoint reads every user and performs a profile update, so it
+    // is restricted to admins.
+    const gate = await requireAdmin()
+    if (gate.error) return gate.error
+
     console.log('Testing ERT profile page functionality...')
 
     // Get the ERT user from database
     const { data: users, error } = await UserService.getUsers({})
-    
+
     if (error || !users) {
       return NextResponse.json({
         success: false,
@@ -18,24 +23,12 @@ export async function GET(request: NextRequest) {
     }
 
     const ertUser = users.find(user => user.role === 'ert')
-    
+
     if (!ertUser) {
       return NextResponse.json({
         success: false,
         error: 'No ERT user found in database'
       }, { status: 404 })
-    }
-
-    // Test what the profile page would do
-    const clerkClient = createClerkClient({
-      secretKey: process.env.CLERK_SECRET_KEY,
-    })
-
-    let clerkUser = null
-    try {
-      clerkUser = await clerkClient.users.getUser(ertUser.clerk_user_id)
-    } catch (clerkError) {
-      console.log('Could not fetch Clerk user:', clerkError)
     }
 
     // Simulate profile data loading (what the page does)
@@ -74,7 +67,6 @@ export async function GET(request: NextRequest) {
       message: 'ERT profile page test completed',
       ertUser: {
         id: ertUser.id,
-        clerk_user_id: ertUser.clerk_user_id,
         email: ertUser.email,
         full_name: ertUser.full_name,
         role: ertUser.role,
@@ -83,14 +75,7 @@ export async function GET(request: NextRequest) {
         department: ertUser.department,
         employee_id: ertUser.employee_id
       },
-      clerkUser: clerkUser ? {
-        id: clerkUser.id,
-        email: clerkUser.emailAddresses[0]?.emailAddress,
-        firstName: clerkUser.firstName,
-        lastName: clerkUser.lastName,
-        publicMetadata: clerkUser.publicMetadata,
-        privateMetadata: clerkUser.privateMetadata
-      } : 'Could not fetch Clerk user',
+      authProvider: 'Clerk has been removed; identity is provided by Supabase Auth',
       profileDataLoading: {
         success: true,
         data: profileData
@@ -117,7 +102,6 @@ export async function GET(request: NextRequest) {
       recommendations: [
         roleGuardTest.accessGranted ? '✅ ERT user has correct role access' : '❌ Role access issue',
         !updateError ? '✅ Profile updates work correctly' : '❌ Profile update failed',
-        clerkUser ? '✅ Clerk user data available' : '⚠️ Clerk user data not available',
         '✅ Database user exists and has correct role',
         'Profile page should work correctly for authenticated ERT users'
       ]
@@ -125,7 +109,7 @@ export async function GET(request: NextRequest) {
 
   } catch (error) {
     console.error('ERT profile page test error:', error)
-    return NextResponse.json({ 
+    return NextResponse.json({
       success: false,
       error: 'Failed to test ERT profile page',
       details: error instanceof Error ? error.message : 'Unknown error'

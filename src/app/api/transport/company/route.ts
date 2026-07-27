@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { auth } from '@clerk/nextjs/server'
+import { getAuthedUser } from '@/lib/supabase/server'
 import { TransportCompanyService } from '@/services/transportCompanyService'
 import { UserService } from '@/services/userService'
 
@@ -22,24 +22,22 @@ export async function GET(request: NextRequest) {
       }
       currentUser = testUser
     } else {
-      const { userId } = await auth()
+      const { user: authUser, appUser } = await getAuthedUser()
 
-      if (!userId) {
+      if (!authUser) {
         return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
       }
 
-      // Get current user to verify they are a transport company user
-      const { data: user, error: userError } = await UserService.getUserByClerkId(userId)
-
-      if (userError || !user) {
+      // appUser IS the caller's public.users row
+      if (!appUser) {
         return NextResponse.json({ error: 'User not found' }, { status: 404 })
       }
 
-      if (user.role !== 'transport_company') {
+      if (appUser.role !== 'transport_company') {
         return NextResponse.json({ error: 'Forbidden - Transport company access required' }, { status: 403 })
       }
 
-      currentUser = user
+      currentUser = appUser
     }
 
     // Get transport company information
@@ -64,22 +62,22 @@ export async function GET(request: NextRequest) {
 // PUT /api/transport/company - Update transport company information
 export async function PUT(request: NextRequest) {
   try {
-    const { userId } = await auth()
+    const { user: authUser, appUser } = await getAuthedUser()
 
-    if (!userId) {
+    if (!authUser) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
-    // Get current user to verify they are a transport company user
-    const { data: user, error: userError } = await UserService.getUserByClerkId(userId)
-
-    if (userError || !user) {
+    // appUser IS the caller's public.users row
+    if (!appUser) {
       return NextResponse.json({ error: 'User not found' }, { status: 404 })
     }
 
-    if (user.role !== 'transport_company') {
+    if (appUser.role !== 'transport_company') {
       return NextResponse.json({ error: 'Forbidden - Transport company access required' }, { status: 403 })
     }
+
+    const user: any = appUser
 
     const body = await request.json()
 

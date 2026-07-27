@@ -30,17 +30,43 @@ import { useState, useEffect, useCallback, useMemo } from 'react'
 import { DatabaseUser } from '@/lib/supabase'
 import { useUsersRealtime } from '@/hooks/useUsersRealtime'
 import { toast } from 'sonner'
+import { UserTypeBadges } from '@/components/admin/UserTypeBadges'
+import { TermsStatusBadge } from '@/components/admin/TermsStatusBadge'
+import { USER_TYPE_FILTERS, UserTypeFilter } from '@/lib/userClassification'
+import { TermsStatus } from '@/lib/terms'
+import { FileText } from 'lucide-react'
 
 interface EnrichedUser extends DatabaseUser {
   banned?: boolean
   lastSignInAt?: number
   clerkUserNotFound?: boolean
+  is_patient?: boolean
+  is_emergency_contact?: boolean
+  terms_status?: TermsStatus
+}
+
+// "27 Jul 2026, 2:30 pm" — matches the format the dashboard spec shows.
+function formatAcceptedAt(iso?: string | null): string {
+  if (!iso) return '—'
+  const d = new Date(iso)
+  if (isNaN(d.getTime())) return '—'
+  return d.toLocaleString('en-GB', {
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true,
+  })
 }
 
 export default function AdminUsersPage() {
   const [enrichedUsers, setEnrichedUsers] = useState<EnrichedUser[]>([])
+  const [enrichLoading, setEnrichLoading] = useState(true)
+  const [apiCount, setApiCount] = useState(0)
   const [searchQuery, setSearchQuery] = useState('')
   const [roleFilter, setRoleFilter] = useState<string>('')
+  const [userTypeFilter, setUserTypeFilter] = useState<UserTypeFilter>('all')
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
   const [userToDelete, setUserToDelete] = useState<DatabaseUser | null>(null)
   const [deleteLoading, setDeleteLoading] = useState(false)
@@ -77,20 +103,20 @@ export default function AdminUsersPage() {
     }
   })
 
-  // Pagination calculations
-  const totalPages = Math.ceil(count / pageSize)
+  // Pagination calculations — driven by the API count, which reflects the
+  // active user-type filter (the realtime hook does not classify users).
+  const totalPages = Math.ceil(apiCount / pageSize)
   const hasNextPage = currentPage < totalPages
   const hasPreviousPage = currentPage > 1
-  const startIndex = count > 0 ? (currentPage - 1) * pageSize + 1 : 0
-  const endIndex = Math.min(currentPage * pageSize, count)
+  const startIndex = apiCount > 0 ? (currentPage - 1) * pageSize + 1 : 0
+  const endIndex = Math.min(currentPage * pageSize, apiCount)
 
-  // Enrich users with Clerk status (banned, lastSignInAt, etc.)
+  // Fetch the (classified) user list from the server. This is the source of
+  // truth for the table AND the count/pagination, because the user-type filter
+  // and the is_patient / is_emergency_contact flags are computed server-side.
+  // The realtime hook below keeps the "Live" indicator and triggers a refetch.
   const enrichUsers = useCallback(async () => {
-    if (users.length === 0) {
-      setEnrichedUsers([])
-      return
-    }
-
+    setEnrichLoading(true)
     try {
       // Build query parameters
       const params = new URLSearchParams({
@@ -99,22 +125,28 @@ export default function AdminUsersPage() {
       })
       if (roleFilter) params.append('role', roleFilter)
       if (searchQuery) params.append('search', searchQuery)
+      if (userTypeFilter && userTypeFilter !== 'all') params.append('userType', userTypeFilter)
 
       const response = await fetch(`/api/admin/users/list-with-status?${params.toString()}`)
       const result = await response.json()
 
       if (response.ok && result.data) {
         setEnrichedUsers(result.data)
+        setApiCount(result.count ?? result.data.length)
       } else {
-        // Fallback to non-enriched users if API fails
+        // Fallback to the un-enriched realtime rows if the API fails. Note these
+        // are not classified and are not user-type filtered.
         setEnrichedUsers(users as EnrichedUser[])
+        setApiCount(count)
       }
     } catch (err) {
       console.error('Failed to enrich users:', err)
-      // Fallback to non-enriched users
       setEnrichedUsers(users as EnrichedUser[])
+      setApiCount(count)
+    } finally {
+      setEnrichLoading(false)
     }
-  }, [users, roleFilter, searchQuery, pageSize, currentPage])
+  }, [users, count, roleFilter, searchQuery, userTypeFilter, pageSize, currentPage])
 
   const loadStats = useCallback(async () => {
     try {
@@ -144,6 +176,11 @@ export default function AdminUsersPage() {
 
   const handleSearch = () => {
     setCurrentPage(1) // Reset to first page on search
+  }
+
+  const handleUserTypeChange = (value: UserTypeFilter) => {
+    setUserTypeFilter(value)
+    setCurrentPage(1) // Reset to first page on filter change
   }
 
   const handleDeleteClick = (user: DatabaseUser) => {
@@ -273,12 +310,6 @@ export default function AdminUsersPage() {
               <Shield className="h-3 w-3 mr-1" />
               Admin Only
             </Badge>
-            <Link href="/admin/users/account-sync">
-              <Button variant="outline">
-                <RefreshCw className="h-4 w-4 mr-2" />
-                Account Sync
-              </Button>
-            </Link>
             <Link href="/admin/users/add">
               <Button>
                 <UserPlus className="h-4 w-4 mr-2" />
@@ -357,7 +388,7 @@ export default function AdminUsersPage() {
               Search Users
             </CardTitle>
           </CardHeader>
-          <CardContent>
+          <CardContent className="space-y-4">
             <div className="flex items-center space-x-4">
               <div className="relative flex-1">
                 <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400 h-4 w-4" />
@@ -386,6 +417,25 @@ export default function AdminUsersPage() {
                 <option value="driver">Driver</option>
               </select>
             </div>
+
+            {/* User Type filter */}
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="flex items-center text-sm font-medium text-gray-600 mr-1">
+                <Filter className="h-4 w-4 mr-1" />
+                User Type:
+              </span>
+              {USER_TYPE_FILTERS.map((f) => (
+                <Button
+                  key={f.value}
+                  type="button"
+                  size="sm"
+                  variant={userTypeFilter === f.value ? 'default' : 'outline'}
+                  onClick={() => handleUserTypeChange(f.value)}
+                >
+                  {f.label}
+                </Button>
+              ))}
+            </div>
           </CardContent>
         </Card>
 
@@ -394,11 +444,13 @@ export default function AdminUsersPage() {
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
               <Users className="h-5 w-5" />
-              All Users ({count})
+              {userTypeFilter === 'all'
+                ? `All Users (${apiCount})`
+                : `${USER_TYPE_FILTERS.find((f) => f.value === userTypeFilter)?.label} (${apiCount})`}
             </CardTitle>
           </CardHeader>
           <CardContent>
-            {loading ? (
+            {(loading || enrichLoading) ? (
               <div className="flex items-center justify-center py-8">
                 <Loader2 className="h-8 w-8 animate-spin text-gray-400" />
                 <span className="ml-2 text-gray-600">Loading users...</span>
@@ -432,10 +484,14 @@ export default function AdminUsersPage() {
                             {new Date(user.created_at).toLocaleDateString()}
                           </div>
                         </div>
-                        <div className="flex items-center space-x-2 mt-1">
+                        <div className="flex items-center flex-wrap gap-2 mt-1">
                           <Badge className={getRoleBadgeColor(user.role)}>
                             {getRoleDisplayName(user.role)}
                           </Badge>
+                          <UserTypeBadges
+                            is_patient={!!user.is_patient}
+                            is_emergency_contact={!!user.is_emergency_contact}
+                          />
                           {user.banned ? (
                             <Badge className="bg-red-100 text-red-800">
                               <Ban className="h-3 w-3 mr-1" />
@@ -452,6 +508,26 @@ export default function AdminUsersPage() {
                               ⚠️ Clerk User Missing
                             </Badge>
                           )}
+                        </div>
+                        {/* Terms & Conditions: Status · Version · Accepted date */}
+                        <div className="flex items-center flex-wrap gap-x-3 gap-y-1 mt-2 text-xs text-gray-600">
+                          <span className="inline-flex items-center font-medium text-gray-500">
+                            <FileText className="h-3 w-3 mr-1" />
+                            Terms:
+                          </span>
+                          <TermsStatusBadge status={user.terms_status} />
+                          <span>
+                            Version:{' '}
+                            <span className="font-medium text-gray-800">
+                              {user.terms_version || '—'}
+                            </span>
+                          </span>
+                          <span>
+                            Accepted:{' '}
+                            <span className="font-medium text-gray-800">
+                              {formatAcceptedAt(user.terms_accepted_at)}
+                            </span>
+                          </span>
                         </div>
                       </div>
                     </div>
@@ -515,7 +591,7 @@ export default function AdminUsersPage() {
             )}
 
             {/* Pagination */}
-            {!loading && !error && count > 0 && (
+            {!loading && !enrichLoading && !error && apiCount > 0 && (
               <div className="mt-6">
                 <PaginationWithInfo
                   currentPage={currentPage}

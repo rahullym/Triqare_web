@@ -1,27 +1,26 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { auth } from '@clerk/nextjs/server'
-import { UserService } from '@/services/userService'
+import { getAuthedUser } from '@/lib/supabase/server'
 import { supabase } from '@/lib/supabase'
 
 // GET /api/transport/assignments - Get assignments for the transport company's drivers
 export async function GET(request: NextRequest) {
   try {
-    const { userId } = await auth()
-    
-    if (!userId) {
+    const { user, appUser } = await getAuthedUser()
+
+    if (!user) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
-    // Get current user to verify they are a transport company user
-    const { data: currentUser, error: userError } = await UserService.getUserByClerkId(userId)
-    
-    if (userError || !currentUser) {
+    // appUser IS the caller's public.users row (id, role, ...)
+    if (!appUser) {
       return NextResponse.json({ error: 'User not found' }, { status: 404 })
     }
 
-    if (currentUser.role !== 'transport_company') {
+    if (appUser.role !== 'transport_company') {
       return NextResponse.json({ error: 'Forbidden - Transport company access required' }, { status: 403 })
     }
+
+    const currentUser: any = appUser
 
     // Parse query parameters
     const { searchParams } = new URL(request.url)

@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { useUser, useClerk } from '@clerk/nextjs'
+import { useAuth } from '@/components/auth/AuthProvider'
 import { useRouter } from 'next/navigation'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -38,8 +38,7 @@ import { RoleGuard } from '@/components/auth/RoleGuard'
 import { DatabaseUser } from '@/lib/supabase'
 
 export default function ERTProfilePage() {
-  const { user, isLoaded } = useUser()
-  const { signOut } = useClerk()
+  const { authUser, appUser, loading: authLoading, signOut } = useAuth()
   const router = useRouter()
   const [isLoading, setIsLoading] = useState(false)
   const [loading, setLoading] = useState(true)
@@ -81,7 +80,7 @@ export default function ERTProfilePage() {
   // Fetch user profile from database
   useEffect(() => {
     const fetchProfile = async () => {
-      if (!user?.id) return
+      if (!authUser?.id) return
 
       try {
         const response = await fetch('/api/profile')
@@ -103,18 +102,18 @@ export default function ERTProfilePage() {
             accountCreated: data.user.created_at || ''
           })
         } else {
-          // Fallback to Clerk data if database user doesn't exist
+          // Fallback to auth/app user data if database user doesn't exist
           setErtData({
-            fullName: `${user.firstName || ''} ${user.lastName || ''}`.trim(),
-            email: user.primaryEmailAddress?.emailAddress || '',
-            phone: user.phoneNumbers?.[0]?.phoneNumber || '',
+            fullName: `${appUser?.firstName || ''} ${appUser?.lastName || ''}`.trim(),
+            email: appUser?.email ?? authUser?.email ?? '',
+            phone: appUser?.phone || '',
             role: 'Emergency Response Team Lead',
             badgeNumber: '',
             certifications: 'Emergency Response, First Aid, CPR', // Default value since special_certifications doesn't exist in DB
             yearsOfService: '5', // Default value since years_experience doesn't exist in DB
             currentShift: 'Day Shift', // Default value since current_shift doesn't exist in DB
-            lastLogin: user.lastSignInAt ? new Date(user.lastSignInAt).toISOString() : '',
-            accountCreated: user.createdAt ? new Date(user.createdAt).toISOString() : ''
+            lastLogin: '',
+            accountCreated: ''
           })
         }
       } catch (error) {
@@ -125,10 +124,10 @@ export default function ERTProfilePage() {
       }
     }
 
-    if (user && isLoaded) {
+    if (authUser && !authLoading) {
       fetchProfile()
     }
-  }, [user, isLoaded])
+  }, [authUser, authLoading])
 
   const handleSaveProfile = async () => {
     setIsLoading(true)
@@ -198,7 +197,7 @@ export default function ERTProfilePage() {
   }
 
   // Show loading state while fetching data
-  if (!isLoaded || loading) {
+  if (authLoading || loading) {
     return (
       <RoleGuard allowedRoles={['ert']}>
         <div className="min-h-screen bg-gradient-to-br from-orange-50 to-red-100 flex items-center justify-center">

@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { ClerkProvider } from '@clerk/nextjs'
+import { AuthProvider } from '@/components/auth/AuthProvider'
 import { Toaster } from "@/components/ui/sonner"
 import "./globals.css";
 
@@ -19,19 +19,13 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <ClerkProvider
-      signInFallbackRedirectUrl="/dashboard"
-      signUpFallbackRedirectUrl="/dashboard"
-      signInUrl="/sign-in"
-      signUpUrl="/sign-up"
-      publishableKey={process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY}
-    >
-      <html lang="en" suppressContentEditableWarning>
-        <body className="font-sans antialiased">
+    <html lang="en" suppressContentEditableWarning>
+      <body className="font-sans antialiased">
+        <AuthProvider>
           {children}
           <Toaster />
-        </body>
-      </html>
-    </ClerkProvider>
+        </AuthProvider>
+      </body>
+    </html>
   );
 }

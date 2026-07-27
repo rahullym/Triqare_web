@@ -1,44 +1,38 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { auth } from '@clerk/nextjs/server'
-import { createClerkClient } from '@clerk/nextjs/server'
 import { UserRole } from '@/types'
 import { UserService } from '@/services/userService'
+import { createClient, getAuthedUser } from '@/lib/supabase/server'
 
-const clerkClient = createClerkClient({
-  secretKey: process.env.CLERK_SECRET_KEY,
-})
+// The [userId] param is now the public.users.id (uuid). Role lives in
+// public.users.role (source of truth) instead of Clerk metadata.
 
-// GET /api/users/[userId]/role - Get user role
+// GET /api/users/[userId]/role - Get user role (admin only)
 export async function GET(
   request: NextRequest,
-  { params }: { params: Promise<{ userId: string }> }
+  { params }: { params: Promise<{ userId: string }> },
 ) {
   try {
-    const { userId: currentUserId } = await auth()
+    const { user, appUser } = await getAuthedUser()
     const { userId } = await params
-    
-    if (!currentUserId) {
+
+    if (!user) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
-
-    // Get current user to check if they're admin
-    const currentUser = await clerkClient.users.getUser(currentUserId)
-    const currentUserRole = currentUser.publicMetadata?.role as UserRole
-    
-    if (currentUserRole !== 'admin') {
+    if (!appUser || appUser.role !== 'admin') {
       return NextResponse.json({ error: 'Forbidden - Admin access required' }, { status: 403 })
     }
 
-    // Get target user
-    const targetUser = await clerkClient.users.getUser(userId)
-    const role = targetUser.publicMetadata?.role as UserRole || null
+    const { data: target, error } = await UserService.getUserById(userId)
+    if (error || !target) {
+      return NextResponse.json({ error: 'User not found' }, { status: 404 })
+    }
 
-    return NextResponse.json({ 
-      userId: targetUser.id,
-      role,
-      email: targetUser.primaryEmailAddress?.emailAddress,
-      firstName: targetUser.firstName,
-      lastName: targetUser.lastName
+    return NextResponse.json({
+      userId: target.id,
+      role: target.role,
+      email: target.email,
+      firstName: target.first_name,
+      lastName: target.last_name,
     })
   } catch (error) {
     console.error('Error fetching user role:', error)
@@ -46,83 +40,79 @@ export async function GET(
   }
 }
 
-// PUT /api/users/[userId]/role - Update user role (admin only)
+// PUT /api/users/[userId]/role - Update user role
 export async function PUT(
   request: NextRequest,
-  { params }: { params: Promise<{ userId: string }> }
+  { params }: { params: Promise<{ userId: string }> },
 ) {
   try {
-    const { userId: currentUserId } = await auth()
+    const { user, appUser } = await getAuthedUser()
     const { userId } = await params
-    
-    if (!currentUserId) {
+
+    if (!user) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
-    // Get current user to check permissions
-    const currentUser = await clerkClient.users.getUser(currentUserId)
-    const currentUserRole = currentUser.publicMetadata?.role as UserRole
-
+    const currentUserRole = appUser?.role as UserRole | undefined
     // Allow self-assignment ONLY for a role-less user updating their own account.
-    const isSelfAssignment = currentUserId === userId && !currentUserRole
+    const isSelfAssignment = appUser?.id === userId && !currentUserRole
 
     if (!isSelfAssignment && currentUserRole !== 'admin') {
-      return NextResponse.json({ error: 'Forbidden - Admin access required or self-assignment for users without roles' }, { status: 403 })
+      return NextResponse.json(
+        { error: 'Forbidden - Admin access required or self-assignment for users without roles' },
+        { status: 403 },
+      )
     }
 
     const body = await request.json()
     const { role } = body
 
-    // Validate role
     const validRoles: UserRole[] = ['admin', 'ert', 'transport_company', 'patient', 'driver']
     if (!role || !validRoles.includes(role)) {
-      return NextResponse.json({
-        error: 'Invalid role. Must be one of: ' + validRoles.join(', ')
-      }, { status: 400 })
+      return NextResponse.json(
+        { error: 'Invalid role. Must be one of: ' + validRoles.join(', ') },
+        { status: 400 },
+      )
     }
 
     // SECURITY: privilege-escalation guard. A role-less user self-assigning may ONLY
-    // claim the non-privileged 'patient' role. All privileged roles (admin, ert,
-    // transport_company, driver) require an existing admin to grant them — otherwise any
-    // account created before the Clerk webhook sets a default role could escalate itself.
+    // claim the non-privileged 'patient' role; all privileged roles require an admin.
     const SELF_ASSIGNABLE_ROLES: UserRole[] = ['patient']
     if (isSelfAssignment && currentUserRole !== 'admin' && !SELF_ASSIGNABLE_ROLES.includes(role)) {
       return NextResponse.json(
         { error: 'Forbidden - self-assignment is limited to the patient role; privileged roles require an administrator' },
-        { status: 403 }
+        { status: 403 },
       )
     }
 
-    // Update user role in Clerk metadata
-    await clerkClient.users.updateUserMetadata(userId, {
-      publicMetadata: {
-        role: role
-      },
-      unsafeMetadata: {
-        role: role // Store role in both public and unsafe for security
-      }
-    })
-
-    // Also update the role in the database
-    const dbUpdateResult = await UserService.updateUserByClerkId(userId, { role })
-    if (dbUpdateResult.error) {
-      console.error('Failed to update role in database:', dbUpdateResult.error)
-      // Continue anyway - Clerk update succeeded, database update failed
-      // This ensures the role is at least updated in Clerk
+    // Source of truth: public.users.role.
+    const dbUpdateResult = await UserService.updateUser(userId, { role })
+    if (dbUpdateResult.error || !dbUpdateResult.data) {
+      return NextResponse.json({ error: dbUpdateResult.error || 'User not found' }, { status: 400 })
     }
 
-    // Get updated user
-    const updatedUser = await clerkClient.users.getUser(userId)
+    // Best-effort: mirror the role into the auth user's app_metadata so a future
+    // re-provision reflects it. (users.role remains authoritative.)
+    if (dbUpdateResult.data.auth_user_id) {
+      try {
+        const admin = createClient()
+        await admin.auth.admin.updateUserById(dbUpdateResult.data.auth_user_id, {
+          app_metadata: { role },
+        })
+      } catch (e) {
+        console.warn('Could not mirror role into auth app_metadata:', e)
+      }
+    }
 
     return NextResponse.json({
       success: true,
-      userId: updatedUser.id,
-      role: updatedUser.publicMetadata?.role,
-      email: updatedUser.primaryEmailAddress?.emailAddress,
-      firstName: updatedUser.firstName,
-      lastName: updatedUser.lastName,
+      userId: dbUpdateResult.data.id,
+      role: dbUpdateResult.data.role,
+      email: dbUpdateResult.data.email,
+      firstName: dbUpdateResult.data.first_name,
+      lastName: dbUpdateResult.data.last_name,
       message: `User role updated to ${role}`,
-      databaseUpdated: !dbUpdateResult.error
+      databaseUpdated: true,
     })
   } catch (error) {
     console.error('Error updating user role:', error)
@@ -130,53 +120,35 @@ export async function PUT(
   }
 }
 
-// DELETE /api/users/[userId]/role - Remove user role (admin only)
+// DELETE /api/users/[userId]/role - Demote a user to the base 'patient' role
+// (users.role is NOT NULL, so a role cannot be fully removed).
 export async function DELETE(
   request: NextRequest,
-  { params }: { params: Promise<{ userId: string }> }
+  { params }: { params: Promise<{ userId: string }> },
 ) {
   try {
-    const { userId: currentUserId } = await auth()
+    const { user, appUser } = await getAuthedUser()
     const { userId } = await params
-    
-    if (!currentUserId) {
+
+    if (!user) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
-
-    // Get current user to check if they're admin
-    const currentUser = await clerkClient.users.getUser(currentUserId)
-    const currentUserRole = currentUser.publicMetadata?.role as UserRole
-    
-    if (currentUserRole !== 'admin') {
+    if (!appUser || appUser.role !== 'admin') {
       return NextResponse.json({ error: 'Forbidden - Admin access required' }, { status: 403 })
     }
 
-    // Remove role from user metadata
-    await clerkClient.users.updateUserMetadata(userId, {
-      publicMetadata: {
-        role: null
-      }
-    })
-
-    // Also remove the role from the database
-    const dbUpdateResult = await UserService.updateUserByClerkId(userId, { role: undefined })
-    if (dbUpdateResult.error) {
-      console.error('Failed to remove role from database:', dbUpdateResult.error)
-      // Continue anyway - Clerk update succeeded, database update failed
+    const dbUpdateResult = await UserService.updateUser(userId, { role: 'patient' })
+    if (dbUpdateResult.error || !dbUpdateResult.data) {
+      return NextResponse.json({ error: dbUpdateResult.error || 'User not found' }, { status: 400 })
     }
-
-    // Get updated user
-    const updatedUser = await clerkClient.users.getUser(userId)
 
     return NextResponse.json({
       success: true,
-      userId: updatedUser.id,
-      role: null,
-      email: updatedUser.primaryEmailAddress?.emailAddress,
-      firstName: updatedUser.firstName,
-      lastName: updatedUser.lastName,
-      message: 'User role removed',
-      databaseUpdated: !dbUpdateResult.error
+      userId: dbUpdateResult.data.id,
+      role: dbUpdateResult.data.role,
+      email: dbUpdateResult.data.email,
+      message: 'User role reset to patient',
+      databaseUpdated: true,
     })
   } catch (error) {
     console.error('Error removing user role:', error)

@@ -1,26 +1,27 @@
-import { supabase, DatabaseUser, CreateUserInput, UpdateUserInput } from '@/lib/supabase'
-import { randomUUID } from 'crypto'
-import { AutoSyncService } from './autoSyncService'
-import { createClerkClient } from '@clerk/nextjs/server'
+import { DatabaseUser, CreateUserInput, UpdateUserInput } from '@/lib/supabase'
+import { createServerClient } from '@/lib/supabase/server'
 
-const clerkClient = createClerkClient({
-  secretKey: process.env.CLERK_SECRET_KEY,
-})
+/**
+ * SERVER-ONLY user service. Uses the service-role client (bypasses RLS) for
+ * privileged user administration. Identity is keyed on the Supabase auth user id
+ * (public.users.auth_user_id) since the Clerk migration; `getUserByClerkId` is
+ * retained only for legacy rows that still carry a clerk_user_id.
+ */
+const supabase = createServerClient()
 
 export class UserService {
-  // Create a new user with automatic sync
+  // Create a new user row directly (no Clerk, no auto-sync). For login-capable
+  // accounts the Supabase auth user is created via supabase.auth.admin.createUser
+  // elsewhere and the handle_new_auth_user() trigger provisions/links this row;
+  // this method is for pre-provisioning rows (CSV imports, admin-created records)
+  // that will be linked by email on first login.
   static async createUser(userData: CreateUserInput): Promise<{ data: DatabaseUser | null; error: string | null }> {
     try {
-      console.log('🚀 Creating user with auto-sync:', userData.email)
-
-      // Prepare the insert data, filtering out undefined values
       const insertData: any = {
-        clerk_user_id: userData.clerk_user_id,
         email: userData.email,
         role: userData.role,
       }
-
-      // Add optional fields only if they exist
+      if (userData.clerk_user_id) insertData.clerk_user_id = userData.clerk_user_id
       if (userData.first_name) insertData.first_name = userData.first_name
       if (userData.last_name) insertData.last_name = userData.last_name
       if (userData.full_name) insertData.full_name = userData.full_name
@@ -50,8 +51,12 @@ export class UserService {
       if (userData.language_preference) insertData.language_preference = userData.language_preference
       if (userData.timezone) insertData.timezone = userData.timezone
 
-      // Use AutoSyncService for automatic bidirectional sync
-      return await AutoSyncService.handleUserCreation(insertData)
+      const { data, error } = await supabase.from('users').insert(insertData).select().single()
+      if (error) {
+        console.error('Error creating user:', error)
+        return { data: null, error: error.message }
+      }
+      return { data, error: null }
     } catch (err) {
       console.error('Unexpected error creating user:', err)
       return { data: null, error: 'Failed to create user' }
@@ -72,7 +77,6 @@ export class UserService {
         .select('*', { count: 'exact' })
         .order('created_at', { ascending: false })
 
-      // Apply filters
       if (filters?.role) {
         query = query.eq('role', filters.role)
       }
@@ -103,20 +107,14 @@ export class UserService {
     }
   }
 
-  // Get a single user by ID
+  // Get a single user by internal id
   static async getUserById(id: string): Promise<{ data: DatabaseUser | null; error: string | null }> {
     try {
-      const { data, error } = await supabase
-        .from('users')
-        .select('*')
-        .eq('id', id)
-        .single()
-
+      const { data, error } = await supabase.from('users').select('*').eq('id', id).single()
       if (error) {
         console.error('Error fetching user:', error)
         return { data: null, error: error.message }
       }
-
       return { data, error: null }
     } catch (err) {
       console.error('Unexpected error fetching user:', err)
@@ -124,20 +122,37 @@ export class UserService {
     }
   }
 
-  // Get a user by Clerk user ID
+  // Get a user by Supabase auth user id (the current identity key).
+  static async getUserByAuthId(authUserId: string): Promise<{ data: DatabaseUser | null; error: string | null }> {
+    try {
+      const { data, error } = await supabase
+        .from('users')
+        .select('*')
+        .eq('auth_user_id', authUserId)
+        .maybeSingle()
+      if (error) {
+        console.error('Error fetching user by auth id:', error)
+        return { data: null, error: error.message }
+      }
+      return { data, error: null }
+    } catch (err) {
+      console.error('Unexpected error fetching user by auth id:', err)
+      return { data: null, error: 'Failed to fetch user' }
+    }
+  }
+
+  // Legacy: get a user by Clerk user id (only matches rows not yet migrated).
   static async getUserByClerkId(clerkUserId: string): Promise<{ data: DatabaseUser | null; error: string | null }> {
     try {
       const { data, error } = await supabase
         .from('users')
         .select('*')
         .eq('clerk_user_id', clerkUserId)
-        .single()
-
+        .maybeSingle()
       if (error) {
         console.error('Error fetching user by Clerk ID:', error)
         return { data: null, error: error.message }
       }
-
       return { data, error: null }
     } catch (err) {
       console.error('Unexpected error fetching user by Clerk ID:', err)
@@ -148,17 +163,11 @@ export class UserService {
   // Get a user by email
   static async getUserByEmail(email: string): Promise<{ data: DatabaseUser | null; error: string | null }> {
     try {
-      const { data, error } = await supabase
-        .from('users')
-        .select('*')
-        .eq('email', email)
-        .single()
-
+      const { data, error } = await supabase.from('users').select('*').eq('email', email).maybeSingle()
       if (error) {
         console.error('Error fetching user by email:', error)
         return { data: null, error: error.message }
       }
-
       return { data, error: null }
     } catch (err) {
       console.error('Unexpected error fetching user by email:', err)
@@ -166,60 +175,54 @@ export class UserService {
     }
   }
 
-  // Update a user with automatic sync
+  // Update a user by internal id
   static async updateUser(id: string, updates: UpdateUserInput): Promise<{ data: DatabaseUser | null; error: string | null }> {
     try {
-      console.log('🔄 Updating user with auto-sync:', id)
-
-      const updateData: any = {
-        ...updates,
-        updated_at: new Date().toISOString()
+      const updateData: any = { ...updates, updated_at: new Date().toISOString() }
+      const { data, error } = await supabase
+        .from('users')
+        .update(updateData)
+        .eq('id', id)
+        .select()
+        .single()
+      if (error) {
+        console.error('Error updating user:', error)
+        return { data: null, error: error.message }
       }
-
-      // Use AutoSyncService for automatic bidirectional sync
-      return await AutoSyncService.handleUserUpdate(id, updateData)
+      return { data, error: null }
     } catch (err) {
       console.error('Unexpected error updating user:', err)
       return { data: null, error: 'Failed to update user' }
     }
   }
 
-  // Update a user by Clerk ID
-  static async updateUserByClerkId(clerkUserId: string, updates: UpdateUserInput): Promise<{ data: DatabaseUser | null; error: string | null }> {
+  // Update a user by Supabase auth user id
+  static async updateUserByAuthId(authUserId: string, updates: UpdateUserInput): Promise<{ data: DatabaseUser | null; error: string | null }> {
     try {
-      const updateData: any = {
-        ...updates,
-        updated_at: new Date().toISOString()
-      }
-
+      const updateData: any = { ...updates, updated_at: new Date().toISOString() }
       const { data, error } = await supabase
         .from('users')
         .update(updateData)
-        .eq('clerk_user_id', clerkUserId)
+        .eq('auth_user_id', authUserId)
         .select()
         .single()
-
       if (error) {
-        console.error('Error updating user by Clerk ID:', error)
+        console.error('Error updating user by auth ID:', error)
         return { data: null, error: error.message }
       }
-
       return { data, error: null }
     } catch (err) {
-      console.error('Unexpected error updating user by Clerk ID:', err)
-      return { data: null, error: 'Failed to update user by Clerk ID' }
+      console.error('Unexpected error updating user by auth ID:', err)
+      return { data: null, error: 'Failed to update user by auth ID' }
     }
   }
 
-  // Delete a user (deletes from both Clerk and Supabase)
+  // Delete a user: remove the Supabase auth user (if linked) then the app row.
   static async deleteUser(id: string): Promise<{ success: boolean; error: string | null }> {
     try {
-      console.log('🗑️ Deleting user:', id)
-
-      // First, get the user to find their clerk_user_id
       const { data: user, error: fetchError } = await supabase
         .from('users')
-        .select('id, clerk_user_id, email, full_name')
+        .select('id, auth_user_id, email, full_name')
         .eq('id', id)
         .single()
 
@@ -228,52 +231,26 @@ export class UserService {
         return { success: false, error: 'User not found' }
       }
 
-      console.log(`Found user to delete: ${user.email} (Clerk ID: ${user.clerk_user_id})`)
-
-      // Delete from Clerk first
-      if (user.clerk_user_id) {
-        try {
-          await clerkClient.users.deleteUser(user.clerk_user_id)
-          console.log(`✅ Deleted user from Clerk: ${user.clerk_user_id}`)
-        } catch (clerkError: any) {
-          // A 404 means the Clerk account is already gone — safe to proceed and
-          // clean up the leftover Supabase row. Any other failure (network,
-          // permissions, rate limit) must ABORT: deleting the Supabase row while
-          // the Clerk account survives creates an orphaned account that is
-          // invisible to the admin dashboard (which lists Supabase rows only) and
-          // blocks the person from re-registering ("email already registered").
-          const status = clerkError?.status
-          const code = clerkError?.errors?.[0]?.code
-          const alreadyGone = status === 404 || code === 'resource_not_found'
-          if (!alreadyGone) {
-            console.error('❌ Aborting deletion — Clerk delete failed:', clerkError)
-            return {
-              success: false,
-              error:
-                `Failed to delete user from Clerk (${status ?? 'unknown error'}). ` +
-                `Aborted to avoid orphaning the account. Please retry.`,
-            }
+      // Delete the Supabase auth user first (if this row is linked to one). A
+      // missing auth user (already gone) is fine; any other failure aborts so we
+      // don't orphan a login whose app row is deleted.
+      if (user.auth_user_id) {
+        const { error: authError } = await supabase.auth.admin.deleteUser(user.auth_user_id)
+        if (authError && authError.status !== 404 && !/not.?found/i.test(authError.message || '')) {
+          console.error('❌ Aborting deletion — auth user delete failed:', authError)
+          return {
+            success: false,
+            error: `Failed to delete auth user (${authError.status ?? 'unknown'}). Aborted to avoid orphaning the account. Please retry.`,
           }
-          console.warn(
-            `⚠️ Clerk account already absent (${status ?? code}); proceeding to delete Supabase row.`
-          )
         }
-      } else {
-        console.log('⚠️ User has no Clerk ID, skipping Clerk deletion')
       }
 
-      // Delete from database (CASCADE will handle related records)
-      const { error: deleteError } = await supabase
-        .from('users')
-        .delete()
-        .eq('id', id)
-
+      const { error: deleteError } = await supabase.from('users').delete().eq('id', id)
       if (deleteError) {
         console.error('❌ Error deleting from database:', deleteError)
         return { success: false, error: deleteError.message }
       }
 
-      console.log(`✅ Successfully deleted user: ${user.email}`)
       return { success: true, error: null }
     } catch (err) {
       console.error('❌ Unexpected error deleting user:', err)
@@ -283,26 +260,16 @@ export class UserService {
 
   // Get user statistics
   static async getUserStats(): Promise<{
-    data: {
-      total: number
-      byRole: Record<string, number>
-      recentUsers: number
-    } | null
+    data: { total: number; byRole: Record<string, number>; recentUsers: number } | null
     error: string | null
   }> {
     try {
-      // Get total count
       const { count: total, error: totalError } = await supabase
         .from('users')
         .select('*', { count: 'exact', head: true })
-
       if (totalError) throw totalError
 
-      // Get count by role
-      const { data: roleData, error: roleError } = await supabase
-        .from('users')
-        .select('role')
-
+      const { data: roleData, error: roleError } = await supabase.from('users').select('role')
       if (roleError) throw roleError
 
       const byRole = roleData?.reduce((acc: Record<string, number>, user) => {
@@ -310,7 +277,6 @@ export class UserService {
         return acc
       }, {}) || {}
 
-      // Get recent users (last 7 days)
       const sevenDaysAgo = new Date()
       sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7)
 
@@ -318,16 +284,11 @@ export class UserService {
         .from('users')
         .select('*', { count: 'exact', head: true })
         .gte('created_at', sevenDaysAgo.toISOString())
-
       if (recentError) throw recentError
 
       return {
-        data: {
-          total: total || 0,
-          byRole,
-          recentUsers: recentUsers || 0
-        },
-        error: null
+        data: { total: total || 0, byRole, recentUsers: recentUsers || 0 },
+        error: null,
       }
     } catch (err) {
       console.error('Unexpected error fetching user stats:', err)
@@ -344,12 +305,10 @@ export class UserService {
         .or(`full_name.ilike.%${query}%,email.ilike.%${query}%,first_name.ilike.%${query}%,last_name.ilike.%${query}%`)
         .limit(limit)
         .order('created_at', { ascending: false })
-
       if (error) {
         console.error('Error searching users:', error)
         return { data: null, error: error.message }
       }
-
       return { data, error: null }
     } catch (err) {
       console.error('Unexpected error searching users:', err)
@@ -357,131 +316,10 @@ export class UserService {
     }
   }
 
-  // Sync user from Clerk to database (create or update)
-  static async syncUserFromClerk(clerkUser: {
-    id: string
-    emailAddresses: Array<{ emailAddress: string }>
-    firstName?: string | null
-    lastName?: string | null
-    imageUrl?: string
-    lastSignInAt?: number | null
-    createdAt?: number
-    publicMetadata?: any
-    privateMetadata?: any
-    unsafeMetadata?: any
-  }): Promise<{ data: DatabaseUser | null; error: string | null }> {
-    try {
-      const email = clerkUser.emailAddresses[0]?.emailAddress
-      if (!email) {
-        return { data: null, error: 'No email address found for user' }
-      }
-
-      const fullName = [clerkUser.firstName, clerkUser.lastName].filter(Boolean).join(' ')
-      // Get role from publicMetadata first (admin-set), then unsafeMetadata (user-set), then default
-      const role = clerkUser.publicMetadata?.role || clerkUser.unsafeMetadata?.role || 'patient'
-
-      // Prepare user data for upsert
-      const userData = {
-        id: randomUUID(), // Generate UUID for the id field
-        clerk_user_id: clerkUser.id,
-        email,
-        first_name: clerkUser.firstName || null,
-        last_name: clerkUser.lastName || null,
-        full_name: fullName || null,
-        role,
-        avatar_url: clerkUser.imageUrl || null,
-        last_sign_in_at: clerkUser.lastSignInAt ? new Date(clerkUser.lastSignInAt).toISOString() : null,
-        // Get bio and phone from publicMetadata first, then unsafeMetadata
-        bio: clerkUser.publicMetadata?.bio || clerkUser.unsafeMetadata?.bio || null,
-        phone: clerkUser.publicMetadata?.phone || clerkUser.unsafeMetadata?.phone || null,
-      }
-
-      // Use Supabase upsert to handle both insert and update
-      const { data, error } = await supabase
-        .from('users')
-        .upsert(userData, {
-          onConflict: 'clerk_user_id', // Use clerk_user_id as the conflict resolution key
-          ignoreDuplicates: false // We want to update if there's a conflict
-        })
-        .select()
-        .single()
-
-      if (error) {
-        // If upsert fails due to email conflict, try to find existing user by email and update
-        if (error.message?.includes('users_email_key')) {
-          console.log(`Email conflict for ${email}, attempting to update existing user...`)
-
-          // Find user by email
-          const { data: existingUser, error: findError } = await supabase
-            .from('users')
-            .select('*')
-            .eq('email', email)
-            .single()
-
-          if (findError || !existingUser) {
-            return { data: null, error: `Email conflict and could not find existing user: ${error.message}` }
-          }
-
-          // Update the existing user with new Clerk ID and data
-          const { data: updatedUser, error: updateError } = await supabase
-            .from('users')
-            .update({
-              ...userData,
-              updated_at: new Date().toISOString()
-            })
-            .eq('id', existingUser.id)
-            .select()
-            .single()
-
-          if (updateError) {
-            return { data: null, error: `Failed to update existing user: ${updateError.message}` }
-          }
-
-          return { data: updatedUser, error: null }
-        }
-
-        console.error('Error syncing user from Clerk:', error)
-        return { data: null, error: error.message }
-      }
-
-      return { data, error: null }
-    } catch (err) {
-      console.error('Unexpected error syncing user from Clerk:', err)
-      return { data: null, error: 'Failed to sync user from Clerk' }
-    }
-  }
-
-  // Update user's last sign-in time
-  static async updateLastSignIn(clerkUserId: string): Promise<{ success: boolean; error: string | null }> {
-    try {
-      const { error } = await supabase
-        .from('users')
-        .update({
-          last_sign_in_at: new Date().toISOString(),
-          updated_at: new Date().toISOString()
-        })
-        .eq('clerk_user_id', clerkUserId)
-
-      if (error) {
-        console.error('Error updating last sign-in:', error)
-        return { success: false, error: error.message }
-      }
-
-      return { success: true, error: null }
-    } catch (err) {
-      console.error('Unexpected error updating last sign-in:', err)
-      return { success: false, error: 'Failed to update last sign-in' }
-    }
-  }
-
   // Get users by role with enhanced filtering
   static async getUsersByRole(
     role: string,
-    options?: {
-      includeInactive?: boolean
-      limit?: number
-      offset?: number
-    }
+    options?: { includeInactive?: boolean; limit?: number; offset?: number },
   ): Promise<{ data: DatabaseUser[] | null; error: string | null; count?: number }> {
     try {
       let query = supabase
@@ -490,12 +328,9 @@ export class UserService {
         .eq('role', role)
         .order('created_at', { ascending: false })
 
-      // Filter by active status
       if (!options?.includeInactive) {
         query = query.eq('is_active', true)
       }
-
-      // Apply pagination
       if (options?.limit) {
         query = query.limit(options.limit)
       }
@@ -504,12 +339,10 @@ export class UserService {
       }
 
       const { data, error, count } = await query
-
       if (error) {
         console.error('Error fetching users by role:', error)
         return { data: null, error: error.message }
       }
-
       return { data, error: null, count: count || 0 }
     } catch (err) {
       console.error('Unexpected error fetching users by role:', err)
@@ -522,17 +355,12 @@ export class UserService {
     try {
       const { error } = await supabase
         .from('users')
-        .update({
-          is_active: false,
-          updated_at: new Date().toISOString()
-        })
+        .update({ is_active: false, updated_at: new Date().toISOString() })
         .eq('id', id)
-
       if (error) {
         console.error('Error deactivating user:', error)
         return { success: false, error: error.message }
       }
-
       return { success: true, error: null }
     } catch (err) {
       console.error('Unexpected error deactivating user:', err)
@@ -545,17 +373,12 @@ export class UserService {
     try {
       const { error } = await supabase
         .from('users')
-        .update({
-          is_active: true,
-          updated_at: new Date().toISOString()
-        })
+        .update({ is_active: true, updated_at: new Date().toISOString() })
         .eq('id', id)
-
       if (error) {
         console.error('Error reactivating user:', error)
         return { success: false, error: error.message }
       }
-
       return { success: true, error: null }
     } catch (err) {
       console.error('Unexpected error reactivating user:', err)
@@ -563,38 +386,24 @@ export class UserService {
     }
   }
 
-  // Find and resolve duplicate users (by email)
+  // Find duplicate users (by email)
   static async findDuplicateUsers(): Promise<{
-    data: Array<{ email: string; count: number; user_ids: string[] }> | null;
+    data: Array<{ email: string; count: number; user_ids: string[] }> | null
     error: string | null
   }> {
     try {
-      const { data, error } = await supabase
-        .from('users')
-        .select('id, email')
-        .order('email')
-
+      const { data, error } = await supabase.from('users').select('id, email').order('email')
       if (error) {
         return { data: null, error: error.message }
       }
-
-      // Group by email and find duplicates
       const emailGroups: Record<string, string[]> = {}
-      data?.forEach(user => {
-        if (!emailGroups[user.email]) {
-          emailGroups[user.email] = []
-        }
+      data?.forEach((user) => {
+        if (!emailGroups[user.email]) emailGroups[user.email] = []
         emailGroups[user.email].push(user.id)
       })
-
       const duplicates = Object.entries(emailGroups)
-        .filter(([email, ids]) => ids.length > 1)
-        .map(([email, ids]) => ({
-          email,
-          count: ids.length,
-          user_ids: ids
-        }))
-
+        .filter(([, ids]) => ids.length > 1)
+        .map(([email, ids]) => ({ email, count: ids.length, user_ids: ids }))
       return { data: duplicates, error: null }
     } catch (err) {
       console.error('Error finding duplicate users:', err)
@@ -603,50 +412,27 @@ export class UserService {
   }
 
   // Clean up duplicate users (keep the most recent one)
-  static async cleanupDuplicateUsers(): Promise<{
-    success: boolean;
-    error: string | null;
-    cleaned: number
-  }> {
+  static async cleanupDuplicateUsers(): Promise<{ success: boolean; error: string | null; cleaned: number }> {
     try {
       const { data: duplicates, error: findError } = await this.findDuplicateUsers()
-
       if (findError || !duplicates) {
         return { success: false, error: findError || 'No duplicates found', cleaned: 0 }
       }
-
       let totalCleaned = 0
-
       for (const duplicate of duplicates) {
-        // Get full user records for this email
         const { data: users, error: getUsersError } = await supabase
           .from('users')
           .select('*')
           .eq('email', duplicate.email)
-          .order('created_at', { ascending: false }) // Most recent first
-
-        if (getUsersError || !users || users.length <= 1) {
-          continue
-        }
-
-        // Keep the first (most recent) user, delete the rest
+          .order('created_at', { ascending: false })
+        if (getUsersError || !users || users.length <= 1) continue
         const usersToDelete = users.slice(1)
-
         for (const userToDelete of usersToDelete) {
-          const { error: deleteError } = await supabase
-            .from('users')
-            .delete()
-            .eq('id', userToDelete.id)
-
-          if (!deleteError) {
-            totalCleaned++
-            console.log(`Deleted duplicate user: ${userToDelete.id} (${userToDelete.email})`)
-          } else {
-            console.error(`Failed to delete duplicate user ${userToDelete.id}:`, deleteError)
-          }
+          const { error: deleteError } = await supabase.from('users').delete().eq('id', userToDelete.id)
+          if (!deleteError) totalCleaned++
+          else console.error(`Failed to delete duplicate user ${userToDelete.id}:`, deleteError)
         }
       }
-
       return { success: true, error: null, cleaned: totalCleaned }
     } catch (err) {
       console.error('Error cleaning up duplicate users:', err)

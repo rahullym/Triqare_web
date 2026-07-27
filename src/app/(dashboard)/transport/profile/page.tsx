@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { useUser, useClerk } from '@clerk/nextjs'
+import { useAuth } from '@/components/auth/AuthProvider'
 import { useRouter } from 'next/navigation'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -60,8 +60,7 @@ interface TransportCompany {
 }
 
 export default function TransportProfilePage() {
-  const { user, isLoaded } = useUser()
-  const { signOut } = useClerk()
+  const { authUser, appUser, loading: authLoading, signOut } = useAuth()
   const router = useRouter()
   const [isLoading, setIsLoading] = useState(false)
   const [loading, setLoading] = useState(true)
@@ -116,7 +115,7 @@ export default function TransportProfilePage() {
   // Fetch user profile and company data from database
   useEffect(() => {
     const fetchProfile = async () => {
-      if (!user?.id) return
+      if (!authUser?.id) return
 
       try {
         setLoading(true)
@@ -156,12 +155,12 @@ export default function TransportProfilePage() {
             })
           }
         } else {
-          // Fallback to Clerk data if company doesn't exist
+          // Fallback to auth/app user data if company doesn't exist
           setCompanyData({
             companyName: 'Transport Company',
-            contactPerson: `${user.firstName || ''} ${user.lastName || ''}`.trim(),
-            email: user.primaryEmailAddress?.emailAddress || '',
-            phone: user.phoneNumbers?.[0]?.phoneNumber || '',
+            contactPerson: `${appUser?.firstName || ''} ${appUser?.lastName || ''}`.trim(),
+            email: appUser?.email ?? authUser?.email ?? '',
+            phone: appUser?.phone || '',
             address: '',
             registrationNumber: '',
             licenseNumber: '',
@@ -171,8 +170,8 @@ export default function TransportProfilePage() {
             state_id: '',
             city_id: '',
             pincode_id: '',
-            lastLogin: user.lastSignInAt ? new Date(user.lastSignInAt).toISOString() : '',
-            accountCreated: user.createdAt ? new Date(user.createdAt).toISOString() : ''
+            lastLogin: '',
+            accountCreated: ''
           })
         }
       } catch (error) {
@@ -184,10 +183,10 @@ export default function TransportProfilePage() {
       }
     }
 
-    if (user && isLoaded) {
+    if (authUser && !authLoading) {
       fetchProfile()
     }
-  }, [user, isLoaded])
+  }, [authUser, authLoading])
 
   // Location change handlers to reset dependent fields
   const handleCountryChange = (value: string) => {
@@ -312,7 +311,7 @@ export default function TransportProfilePage() {
   }
 
   // Show loading state while fetching data
-  if (!isLoaded || loading) {
+  if (authLoading || loading) {
     return (
       <RoleGuard allowedRoles={['transport_company']}>
         <div className="min-h-screen bg-gradient-to-br from-blue-50 to-cyan-100 flex items-center justify-center">
@@ -335,7 +334,7 @@ export default function TransportProfilePage() {
         <div className="flex items-center space-x-4">
           <Avatar className="w-16 h-16">
             <AvatarImage
-              src={dbUser?.avatar_url || user?.imageUrl}
+              src={dbUser?.avatar_url || undefined}
               alt={companyData.companyName || 'Transport Company'}
             />
             <AvatarFallback className="text-lg bg-gradient-to-br from-green-500 to-blue-600 text-white">
@@ -435,7 +434,7 @@ export default function TransportProfilePage() {
                 <div className="relative">
                   <Avatar className="w-24 h-24">
                     <AvatarImage
-                      src={dbUser?.avatar_url || user?.imageUrl}
+                      src={dbUser?.avatar_url || undefined}
                       alt={companyData.companyName || 'Transport Company'}
                     />
                     <AvatarFallback className="text-xl bg-gradient-to-br from-green-500 to-blue-600 text-white">

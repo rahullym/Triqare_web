@@ -1,96 +1,58 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { auth } from '@clerk/nextjs/server'
-import { createClerkClient } from '@clerk/nextjs/server'
+import { getAuthedUser } from '@/lib/supabase/server'
 import { UserService } from '@/services/userService'
-import { MockUserStore } from '@/lib/mockUserStore'
-
-const clerkClient = createClerkClient({
-  secretKey: process.env.CLERK_SECRET_KEY,
-})
 
 // GET /api/profile - Get current user's profile
 export async function GET() {
   try {
-    const { userId } = await auth()
+    const { user, appUser } = await getAuthedUser()
 
-    if (!userId) {
+    if (!user) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
-    let { data: user, error } = await UserService.getUserByClerkId(userId)
-
-    // If user doesn't exist in database, check mock store
-    if (error && error.includes('Cannot coerce the result to a single JSON object')) {
-      console.log('User not found in database, checking mock store...')
-
-      const mockUser = MockUserStore.getUserByClerkId(userId)
-      if (mockUser) {
-        console.log('User found in mock store')
-        user = mockUser
-      } else {
-        // SECURITY: do NOT fabricate a default admin profile here. Previously this
-        // returned role:'admin' for any authenticated user not yet synced to the DB,
-        // which let brand-new self-signed-up accounts be treated as administrators.
-        // An authenticated user with no DB record is in an onboarding-required state.
-        console.log('Authenticated user has no DB/mock record — onboarding required')
-        return NextResponse.json(
-          { error: 'Profile not found', code: 'onboarding_required' },
-          { status: 404 }
-        )
-      }
-    } else if (error) {
-      console.error('Error fetching user profile:', error)
-      return NextResponse.json({ error: 'Failed to fetch profile' }, { status: 500 })
+    // appUser IS the caller's public.users row.
+    // SECURITY: do NOT fabricate a default (admin) profile. An authenticated user
+    // with no DB record is in an onboarding-required state.
+    if (!appUser) {
+      console.log('Authenticated user has no DB record — onboarding required')
+      return NextResponse.json(
+        { error: 'Profile not found', code: 'onboarding_required' },
+        { status: 404 }
+      )
     }
 
-    if (!user) {
-      return NextResponse.json({ error: 'User not found' }, { status: 404 })
-    }
-
-    return NextResponse.json({ user })
+    return NextResponse.json({ user: appUser })
   } catch (error) {
     console.error('Error in GET /api/profile:', error)
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })
   }
-  // Updated to handle user creation
 }
 
 // PUT /api/profile - Update current user's profile
 export async function PUT(request: NextRequest) {
   try {
-    const { userId } = await auth()
-    
-    if (!userId) {
+    const { user, appUser } = await getAuthedUser()
+
+    if (!user) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
-    const body = await request.json()
-
-    // Get current user from database
-    let { data: currentUser, error: fetchError } = await UserService.getUserByClerkId(userId)
-
-    // If user doesn't exist in database, check mock store for updates
-    if (fetchError && fetchError.includes('Cannot coerce the result to a single JSON object')) {
-      console.log('User not found in database during update, checking mock store...')
-
-      const mockUser = MockUserStore.getUserByClerkId(userId)
-      if (mockUser) {
-        console.log('User found in mock store for update')
-        currentUser = mockUser
-      } else {
-        // SECURITY: do NOT fabricate a default admin profile (see GET handler).
-        // An authenticated user with no DB record cannot update a profile that
-        // does not exist; treat as onboarding-required.
-        console.log('Authenticated user has no DB/mock record — onboarding required')
-        return NextResponse.json(
-          { error: 'Profile not found', code: 'onboarding_required' },
-          { status: 404 }
-        )
-      }
-    } else if (fetchError || !currentUser) {
-      console.error('Error fetching current user:', fetchError)
-      return NextResponse.json({ error: 'User not found' }, { status: 404 })
+    // appUser IS the caller's public.users row.
+    // SECURITY: do NOT fabricate a default admin profile (see GET handler).
+    // An authenticated user with no DB record cannot update a profile that
+    // does not exist; treat as onboarding-required.
+    if (!appUser) {
+      console.log('Authenticated user has no DB record — onboarding required')
+      return NextResponse.json(
+        { error: 'Profile not found', code: 'onboarding_required' },
+        { status: 404 }
+      )
     }
+
+    const currentUser: any = appUser
+
+    const body = await request.json()
 
     // Prepare update data - only include fields that are provided
     const updateData: any = {}
@@ -141,39 +103,18 @@ export async function PUT(request: NextRequest) {
     // Always update the timestamp
     updateData.updated_at = new Date().toISOString()
 
-    // Update user profile in database or mock store
-    if (currentUser && currentUser.clerk_user_id === userId && currentUser.id === userId) {
-      // This is a default mock user (where id equals clerk_user_id), just return success with updated data
-      const updatedUser = { ...currentUser, ...updateData, updated_at: new Date().toISOString() }
-      return NextResponse.json({
-        message: 'Profile updated successfully (default mock mode)',
-        user: updatedUser
-      })
-    } else if (MockUserStore.hasUser(userId)) {
-      // This is a mock store user, update in mock store
-      const updatedUser = MockUserStore.updateUser(userId, updateData)
-      if (updatedUser) {
-        return NextResponse.json({
-          message: 'Profile updated successfully (mock store)',
-          user: updatedUser
-        })
-      } else {
-        return NextResponse.json({ error: 'Failed to update profile in mock store' }, { status: 500 })
-      }
-    } else {
-      // Real database user, perform actual update
-      const { data: updatedUser, error: updateError } = await UserService.updateUser(currentUser?.id || userId, updateData)
+    // Perform the actual database update for the authenticated user.
+    const { data: updatedUser, error: updateError } = await UserService.updateUser(currentUser.id, updateData)
 
-      if (updateError) {
-        console.error('Error updating user profile:', updateError)
-        return NextResponse.json({ error: 'Failed to update profile' }, { status: 500 })
-      }
-
-      return NextResponse.json({
-        message: 'Profile updated successfully',
-        user: updatedUser
-      })
+    if (updateError) {
+      console.error('Error updating user profile:', updateError)
+      return NextResponse.json({ error: 'Failed to update profile' }, { status: 500 })
     }
+
+    return NextResponse.json({
+      message: 'Profile updated successfully',
+      user: updatedUser
+    })
   } catch (error) {
     console.error('Error in PUT /api/profile:', error)
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 })

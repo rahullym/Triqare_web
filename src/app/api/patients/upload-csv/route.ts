@@ -1,7 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { supabase } from '@/lib/supabase'
-import { createClerkUser } from '@/lib/clerk-user-creation'
-import { auth } from '@clerk/nextjs/server'
+import { createClient } from '@/lib/supabase/server'
+import { createSupabaseAuthUser } from '@/lib/clerk-user-creation'
+import { requireAdmin } from '@/lib/auth/requireAdmin'
+import { UserService } from '@/services/userService'
+
+// Service-role client (bypasses RLS) for privileged CSV provisioning.
+const supabase = createClient()
 
 interface CSVPatient {
   full_name: string
@@ -162,12 +166,9 @@ async function lookupLocationIds(record: CSVPatient) {
 
 export async function POST(request: NextRequest) {
   try {
-    // Get current user for invitation tracking
-    const { userId: currentUserId } = await auth()
-
-    if (!currentUserId) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-    }
+    // Admin only.
+    const gate = await requireAdmin()
+    if (gate.error) return gate.error
 
     const formData = await request.formData()
     const file = formData.get('file') as File | null
@@ -205,7 +206,7 @@ export async function POST(request: NextRequest) {
           .from('users')
           .select('id')
           .eq('email', record.email.trim())
-          .single()
+          .maybeSingle()
 
         if (existingUser) {
           results.errors.push(`Email already exists: ${record.email}`)
@@ -213,47 +214,38 @@ export async function POST(request: NextRequest) {
           continue
         }
 
-        // Create user directly in Clerk
-        const userCreationResult = await createClerkUser(
+        // Create the login (Supabase auth user). The handle_new_auth_user() DB
+        // trigger auto-creates the public.users row and links it — so we must NOT
+        // insert a users row (with a clerk_user_id) ourselves.
+        const userCreationResult = await createSupabaseAuthUser(
           record.email.trim(),
           record.full_name.trim(),
           'patient',
           record.phone
         )
 
-        if (!userCreationResult.success) {
-          results.errors.push(`Failed to create user ${record.email}: ${userCreationResult.error}`)
+        if (!userCreationResult.success || !userCreationResult.appUserId) {
+          results.errors.push(`Failed to create user ${record.email}: ${userCreationResult.error || 'user row not provisioned'}`)
           results.failed++
           continue
         }
+
+        const appUserId = userCreationResult.appUserId
+
+        // Persist CSV-provided profile fields that the auth identity does not carry.
+        await UserService.updateUser(appUserId, {
+          full_name: record.full_name.trim(),
+          phone: record.phone || undefined,
+        })
 
         // Get location IDs
         const locationIds = await lookupLocationIds(record)
 
-        // Create user record in Supabase
-        const { data: newUser, error: userError } = await supabase
-          .from('users')
-          .insert({
-            clerk_user_id: userCreationResult.clerkUserId,
-            email: record.email.trim(),
-            full_name: record.full_name.trim(),
-            phone: record.phone || null,
-            role: 'patient'
-          })
-          .select()
-          .single()
-
-        if (userError || !newUser) {
-          results.errors.push(`Failed to create user record for ${record.email}: ${userError?.message}`)
-          results.failed++
-          continue
-        }
-
-        // Create patient record
+        // Upsert the patient profile keyed on the provisioned users.id (PK user_id).
         const { error: patientError } = await supabase
           .from('patients')
-          .insert({
-            user_id: newUser.id,
+          .upsert({
+            user_id: appUserId,
             dob: parseDate(record.dob),
             gender: record.gender && ['Male', 'Female', 'Other'].includes(record.gender) ? record.gender : null,
             blood_group: record.blood_group && ['A+', 'A-', 'B+', 'B-', 'O+', 'O-', 'AB+', 'AB-'].includes(record.blood_group) ? record.blood_group : null,
@@ -269,7 +261,7 @@ export async function POST(request: NextRequest) {
             longitude: record.longitude ? parseFloat(record.longitude) : null,
             address_line: record.address_line || null,
             ...locationIds
-          })
+          }, { onConflict: 'user_id' })
 
         if (patientError) {
           results.errors.push(`Failed to create patient record for ${record.email}: ${patientError.message}`)
@@ -301,4 +293,3 @@ export async function POST(request: NextRequest) {
     )
   }
 }
-

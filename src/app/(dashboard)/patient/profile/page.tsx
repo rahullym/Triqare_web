@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { useUser } from '@clerk/nextjs'
+import { useAuth } from '@/components/auth/AuthProvider'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -34,7 +34,7 @@ import { RoleGuard } from '@/components/auth/RoleGuard'
 import { DatabaseUser } from '@/lib/supabase'
 
 export default function PatientProfilePage() {
-  const { user, isLoaded } = useUser()
+  const { authUser, appUser, loading: authLoading } = useAuth()
   const [isLoading, setIsLoading] = useState(false)
   const [loading, setLoading] = useState(true)
   const [dbUser, setDbUser] = useState<DatabaseUser | null>(null)
@@ -78,7 +78,7 @@ export default function PatientProfilePage() {
   // Fetch user profile from database
   useEffect(() => {
     const fetchProfile = async () => {
-      if (!user?.id) return
+      if (!authUser?.id) return
 
       try {
         const response = await fetch('/api/profile')
@@ -105,11 +105,11 @@ export default function PatientProfilePage() {
             accountCreated: data.user.created_at || ''
           })
         } else {
-          // Fallback to Clerk data if database user doesn't exist
+          // Fallback to auth/app user data if database user doesn't exist
           setPatientData({
-            fullName: `${user.firstName || ''} ${user.lastName || ''}`.trim(),
-            email: user.primaryEmailAddress?.emailAddress || '',
-            phone: user.phoneNumbers?.[0]?.phoneNumber || '',
+            fullName: `${appUser?.firstName || ''} ${appUser?.lastName || ''}`.trim(),
+            email: appUser?.email ?? authUser?.email ?? '',
+            phone: appUser?.phone || '',
             dateOfBirth: '',
             address: '',
             emergencyContact: '',
@@ -121,7 +121,7 @@ export default function PatientProfilePage() {
             insuranceProvider: '',
             insuranceNumber: '',
             lastCheckup: '',
-            accountCreated: user.createdAt ? new Date(user.createdAt).toISOString() : ''
+            accountCreated: ''
           })
         }
       } catch (error) {
@@ -132,10 +132,10 @@ export default function PatientProfilePage() {
       }
     }
 
-    if (user && isLoaded) {
+    if (authUser && !authLoading) {
       fetchProfile()
     }
-  }, [user, isLoaded])
+  }, [authUser, authLoading])
 
   const handleSave = async () => {
     setIsLoading(true)
@@ -182,7 +182,7 @@ export default function PatientProfilePage() {
   }
 
   // Show loading state while fetching data
-  if (!isLoaded || loading) {
+  if (authLoading || loading) {
     return (
       <RoleGuard allowedRoles={['patient']}>
         <div className="min-h-screen bg-gradient-to-br from-green-50 to-blue-100 flex items-center justify-center">
@@ -205,7 +205,7 @@ export default function PatientProfilePage() {
           <div className="flex items-center space-x-4">
             <Avatar className="w-16 h-16">
               <AvatarImage
-                src={dbUser?.avatar_url || user?.imageUrl}
+                src={dbUser?.avatar_url || undefined}
                 alt={patientData.fullName || 'Patient'}
               />
               <AvatarFallback className="text-lg bg-gradient-to-br from-blue-500 to-green-600 text-white">

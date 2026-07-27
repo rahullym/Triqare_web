@@ -1,6 +1,6 @@
 'use client'
 
-import { useUser, SignOutButton } from '@clerk/nextjs'
+import { useAuth } from '@/components/auth/AuthProvider'
 import { useRole } from '@/hooks/useRole'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -8,9 +8,10 @@ import { useRouter } from 'next/navigation'
 import { LogOut } from 'lucide-react'
 
 export default function DebugUserPage() {
-  const { user, isLoaded } = useUser()
+  const { authUser, appUser, signOut } = useAuth()
   const { role, loading, updateRole } = useRole()
   const router = useRouter()
+  const email = appUser?.email ?? authUser?.email ?? ''
 
   const handleSetRole = async (newRole: 'admin' | 'ert' | 'transport_company') => {
     try {
@@ -22,11 +23,11 @@ export default function DebugUserPage() {
     }
   }
 
-  if (loading || !isLoaded) {
+  if (loading) {
     return <div className="p-8">Loading...</div>
   }
 
-  if (!user) {
+  if (!authUser) {
     return (
       <div className="p-8">
         <p>Not signed in. <a href="/sign-in" className="text-blue-600">Sign in here</a></p>
@@ -46,10 +47,10 @@ export default function DebugUserPage() {
               <div>
                 <h3 className="font-semibold mb-2">Basic Info:</h3>
                 <div className="space-y-1 text-sm">
-                  <p><strong>ID:</strong> {user.id}</p>
-                  <p><strong>Email:</strong> {user.primaryEmailAddress?.emailAddress}</p>
-                  <p><strong>First Name:</strong> {user.firstName || 'Not set'}</p>
-                  <p><strong>Last Name:</strong> {user.lastName || 'Not set'}</p>
+                  <p><strong>ID:</strong> {authUser?.id}</p>
+                  <p><strong>Email:</strong> {email}</p>
+                  <p><strong>First Name:</strong> {appUser?.firstName || 'Not set'}</p>
+                  <p><strong>Last Name:</strong> {appUser?.lastName || 'Not set'}</p>
                 </div>
               </div>
               
@@ -57,8 +58,8 @@ export default function DebugUserPage() {
                 <h3 className="font-semibold mb-2">Role Info:</h3>
                 <div className="space-y-1 text-sm">
                   <p><strong>Current Role:</strong> {role || 'None'}</p>
-                  <p><strong>Public Metadata Role:</strong> {user.publicMetadata?.role as string || 'None'}</p>
-                  <p><strong>Private Metadata Role:</strong> {'None'}</p>
+                  <p><strong>App User Role:</strong> {appUser?.role || 'None'}</p>
+                  <p><strong>Account Type:</strong> {appUser?.accountType || 'None'}</p>
                 </div>
               </div>
             </div>
@@ -66,21 +67,19 @@ export default function DebugUserPage() {
             <div>
               <h3 className="font-semibold mb-2">Email Pattern Check:</h3>
               <div className="space-y-1 text-sm">
-                <p>Contains 'admin': {user.primaryEmailAddress?.emailAddress?.includes('admin') ? '✅ Yes' : '❌ No'}</p>
-                <p>Contains 'ert': {user.primaryEmailAddress?.emailAddress?.includes('ert') ? '✅ Yes' : '❌ No'}</p>
-                <p>Contains 'transport': {user.primaryEmailAddress?.emailAddress?.includes('transport') ? '✅ Yes' : '❌ No'}</p>
-                <p>Contains 'patient': {user.primaryEmailAddress?.emailAddress?.includes('patient') ? '✅ Yes' : '❌ No'}</p>
-                <p>Contains 'driver': {user.primaryEmailAddress?.emailAddress?.includes('driver') ? '✅ Yes' : '❌ No'}</p>
+                <p>Contains 'admin': {email.includes('admin') ? '✅ Yes' : '❌ No'}</p>
+                <p>Contains 'ert': {email.includes('ert') ? '✅ Yes' : '❌ No'}</p>
+                <p>Contains 'transport': {email.includes('transport') ? '✅ Yes' : '❌ No'}</p>
+                <p>Contains 'patient': {email.includes('patient') ? '✅ Yes' : '❌ No'}</p>
+                <p>Contains 'driver': {email.includes('driver') ? '✅ Yes' : '❌ No'}</p>
               </div>
             </div>
 
             <div>
-              <h3 className="font-semibold mb-2">Full Metadata:</h3>
+              <h3 className="font-semibold mb-2">Full User Data:</h3>
               <div className="bg-gray-100 p-3 rounded text-xs">
-                <p><strong>Public Metadata:</strong></p>
-                <pre>{JSON.stringify(user.publicMetadata, null, 2)}</pre>
-                <p className="mt-2"><strong>Private Metadata:</strong></p>
-                <pre>{JSON.stringify({}, null, 2)}</pre>
+                <p><strong>App User (Supabase):</strong></p>
+                <pre>{JSON.stringify(appUser, null, 2)}</pre>
               </div>
             </div>
           </CardContent>
@@ -134,12 +133,10 @@ export default function DebugUserPage() {
               <Button onClick={() => router.push('/')} variant="outline">
                 Go Home
               </Button>
-              <SignOutButton>
-                <Button variant="outline" className="flex items-center space-x-2">
-                  <LogOut className="w-4 h-4" />
-                  <span>Sign Out</span>
-                </Button>
-              </SignOutButton>
+              <Button variant="outline" className="flex items-center space-x-2" onClick={() => signOut()}>
+                <LogOut className="w-4 h-4" />
+                <span>Sign Out</span>
+              </Button>
             </div>
           </CardContent>
         </Card>

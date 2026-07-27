@@ -7,7 +7,7 @@ import { cn } from '@/lib/utils'
 import { ChevronDown, ChevronRight, User, LogOut } from 'lucide-react'
 import { useState } from 'react'
 import { UserRole } from '@/types'
-import { SignOutButton } from '@clerk/nextjs'
+import { useAuth } from '@/components/auth/AuthProvider'
 import { Logo } from '@/components/ui/logo'
 
 const ROLE_LABEL: Record<string, string> = {
@@ -18,6 +18,7 @@ const ROLE_LABEL: Record<string, string> = {
 
 export function Sidebar() {
   const pathname = usePathname()
+  const { signOut } = useAuth()
   const [expandedItems, setExpandedItems] = useState<string[]>([])
 
   // Determine role based on current path
@@ -115,12 +116,13 @@ export function Sidebar() {
             <div className="truncate text-xs text-slate-500">{ROLE_LABEL[role] ?? 'Member'}</div>
           </div>
         </Link>
-        <SignOutButton>
-          <button className="flex w-full items-center justify-center gap-2 rounded-2xl border border-slate-200 px-4 py-2 text-sm font-medium text-slate-500 transition hover:border-[#cc3333]/30 hover:bg-[#f5cccc]/30 hover:text-[#cc3333] focus:outline-none focus:ring-2 focus:ring-[#cc3333]/30">
-            <LogOut className="h-4 w-4" />
-            Sign Out
-          </button>
-        </SignOutButton>
+        <button
+          onClick={() => signOut()}
+          className="flex w-full items-center justify-center gap-2 rounded-2xl border border-slate-200 px-4 py-2 text-sm font-medium text-slate-500 transition hover:border-[#cc3333]/30 hover:bg-[#f5cccc]/30 hover:text-[#cc3333] focus:outline-none focus:ring-2 focus:ring-[#cc3333]/30"
+        >
+          <LogOut className="h-4 w-4" />
+          Sign Out
+        </button>
       </div>
     </aside>
   )

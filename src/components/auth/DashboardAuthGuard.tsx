@@ -2,7 +2,7 @@
 
 import { useEffect } from 'react'
 import { useRouter, usePathname } from 'next/navigation'
-import { useUser } from '@clerk/nextjs'
+import { useAuth } from '@/components/auth/AuthProvider'
 import { useRole } from '@/hooks/useRole'
 import { hasAccessToPath } from '@/lib/navigation'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -16,11 +16,11 @@ interface DashboardAuthGuardProps {
 export function DashboardAuthGuard({ children }: DashboardAuthGuardProps) {
   const router = useRouter()
   const pathname = usePathname()
-  const { user, isLoaded } = useUser()
-  const { role, loading } = useRole()
+  const { authUser: user, appUser, loading } = useAuth()
+  const { role } = useRole()
 
   useEffect(() => {
-    if (!loading && isLoaded) {
+    if (!loading) {
       if (!user) {
         // User not authenticated, redirect to sign-in
         const signInUrl = `/sign-in?redirect_url=${encodeURIComponent(pathname)}`
@@ -63,10 +63,10 @@ export function DashboardAuthGuard({ children }: DashboardAuthGuardProps) {
         }
       }
     }
-  }, [user, role, loading, isLoaded, pathname, router])
+  }, [user, role, loading, pathname, router])
 
   // Show loading state while checking authentication and role
-  if (loading || !isLoaded) {
+  if (loading) {
     return (
       <div className="min-h-screen bg-gray-50 flex items-center justify-center">
         <div className="text-center space-y-4">
@@ -136,7 +136,7 @@ export function DashboardAuthGuard({ children }: DashboardAuthGuardProps) {
             
             <div className="space-y-4">
               <p className="text-gray-600">
-                Welcome <strong>{user.firstName || user.primaryEmailAddress?.emailAddress}</strong>! 
+                Welcome <strong>{appUser?.firstName || user.email}</strong>!
                 Your account has been created successfully, but you need a role assigned to access the system.
               </p>
               

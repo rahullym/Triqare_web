@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { createClient } from '@/lib/supabase/server'
-import { auth } from '@clerk/nextjs/server'
+import { createClient, getAuthedUser } from '@/lib/supabase/server'
 
 export async function GET(request: NextRequest) {
   try {
@@ -37,28 +36,23 @@ export async function GET(request: NextRequest) {
       console.log('Using test transport company:', transportCompany.company_name)
     } else {
       // Normal authentication flow
-      const { userId: clerkUserId } = await auth()
-      if (!clerkUserId) {
+      const { user, appUser } = await getAuthedUser()
+      if (!user) {
         return NextResponse.json(
           { error: 'Unauthorized' },
           { status: 401 }
         )
       }
 
-      // Get current user from database
-      const { data: currentUser, error: userError } = await supabase
-        .from('users')
-        .select('id, email, role, full_name')
-        .eq('clerk_user_id', clerkUserId)
-        .single()
-
-      if (userError || !currentUser) {
-        console.error('User error:', userError)
+      // appUser IS the caller's public.users row
+      if (!appUser) {
         return NextResponse.json(
-          { error: 'User not found', details: userError?.message },
+          { error: 'User not found' },
           { status: 404 }
         )
       }
+
+      const currentUser: any = appUser
 
       if (currentUser.role !== 'transport_company') {
         return NextResponse.json(

@@ -7,7 +7,16 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey)
 // Database types based on users table schema
 export interface DatabaseUser {
   id: string
-  clerk_user_id: string
+  clerk_user_id?: string | null
+  auth_user_id?: string | null
+  account_type?: string | null
+  onboarding_completed?: boolean | null
+
+  // Terms & Conditions acceptance (denormalised "most recent acceptance").
+  // Full audit history lives in the terms_acceptances table.
+  terms_accepted?: boolean | null
+  terms_version?: string | null
+  terms_accepted_at?: string | null
   email: string
   first_name?: string | null
   last_name?: string | null

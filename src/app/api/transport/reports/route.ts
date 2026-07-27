@@ -1,32 +1,22 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { auth } from '@clerk/nextjs/server'
-import { createClient } from '@/lib/supabase/server'
+import { createClient, getAuthedUser } from '@/lib/supabase/server'
 
 // GET /api/transport/reports - Get performance reports for the transport company
 export async function GET(request: NextRequest) {
   try {
-    const { userId: clerkUserId } = await auth()
+    const { user, appUser } = await getAuthedUser()
 
-    if (!clerkUserId) {
+    if (!user) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
-    const supabase = await createClient()
-
-    // Get current user to verify they are a transport company user
-    const { data: currentUser, error: userError } = await supabase
-      .from('users')
-      .select('id, email, role, full_name')
-      .eq('clerk_user_id', clerkUserId)
-      .single()
-
-    if (userError || !currentUser) {
-      console.error('User error:', userError)
-      return NextResponse.json({
-        error: 'User not found',
-        details: userError?.message
-      }, { status: 404 })
+    // appUser IS the caller's public.users row
+    if (!appUser) {
+      return NextResponse.json({ error: 'User not found' }, { status: 404 })
     }
+
+    const currentUser: any = appUser
+    const supabase = await createClient()
 
     if (currentUser.role !== 'transport_company') {
       return NextResponse.json({

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { auth } from '@clerk/nextjs/server'
+import { getAuthedUser } from '@/lib/supabase/server'
 import { UserService } from '@/services/userService'
 import { TransportCompanyService } from '@/services/transportCompanyService'
 import { supabase } from '@/lib/supabase'
@@ -31,26 +31,25 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ error: 'Test transport company not found' }, { status: 404 })
       }
     } else {
-      const { userId } = await auth()
-      if (!userId) {
+      const { user, appUser } = await getAuthedUser()
+      if (!user) {
         return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
       }
 
-      // Get current user
-      const { data: user, error: userError } = await UserService.getUserById(userId)
-      if (userError || !user) {
+      // appUser IS the caller's public.users row
+      if (!appUser) {
         return NextResponse.json({ error: 'User not found' }, { status: 404 })
       }
 
       // Check if user is transport company
-      if (user.role !== 'transport_company') {
+      if (appUser.role !== 'transport_company') {
         return NextResponse.json({ error: 'Access denied. Transport company role required.' }, { status: 403 })
       }
 
-      currentUser = user
+      currentUser = appUser
 
-      // Get transport company
-      const company = await TransportCompanyService.getTransportCompanyByUserId(userId)
+      // Get transport company (keyed by the resolved public.users.id)
+      const company = await TransportCompanyService.getTransportCompanyByUserId(currentUser.id)
       transportCompany = company
     }
 

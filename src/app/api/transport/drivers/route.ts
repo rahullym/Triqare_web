@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { auth } from '@clerk/nextjs/server'
+import { getAuthedUser } from '@/lib/supabase/server'
 import { DriverService } from '@/services/driverService'
-import { UserService } from '@/services/userService'
 import { supabase } from '@/lib/supabase'
 
 // GET /api/transport/drivers - Get drivers for the current transport company user
@@ -36,24 +35,22 @@ export async function GET(request: NextRequest) {
         })
       }
     } else {
-      const { userId } = await auth()
+      const { user, appUser } = await getAuthedUser()
 
-      if (!userId) {
+      if (!user) {
         return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
       }
 
-      // Get current user to verify they are a transport company user
-      const { data: user, error: userError } = await UserService.getUserByClerkId(userId)
-
-      if (userError || !user) {
+      // appUser IS the caller's public.users row
+      if (!appUser) {
         return NextResponse.json({ error: 'User not found' }, { status: 404 })
       }
 
-      if (user.role !== 'transport_company') {
+      if (appUser.role !== 'transport_company') {
         return NextResponse.json({ error: 'Forbidden - Transport company access required' }, { status: 403 })
       }
 
-      currentUser = user
+      currentUser = appUser
     }
 
     // Parse additional query parameters

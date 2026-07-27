@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { auth, clerkClient } from '@clerk/nextjs/server'
+import { requireAdmin } from '@/lib/auth/requireAdmin'
 import { createClient } from '@/lib/supabase/server'
 
 // Google Places API endpoint
@@ -36,20 +36,9 @@ interface PlaceDetails {
 }
 
 export async function POST(request: NextRequest) {
-  // Check authentication first
-  const { userId } = await auth()
-  if (!userId) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-  }
-
-  // Check if user is admin
-  const client = await clerkClient()
-  const user = await client.users.getUser(userId)
-  const userRole = user.publicMetadata?.role
-
-  if (userRole !== 'admin') {
-    return NextResponse.json({ error: 'Forbidden - Admin access required' }, { status: 403 })
-  }
+  // Check authentication + admin authorization first
+  const gate = await requireAdmin()
+  if (gate.error) return gate.error
 
   const apiKey = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY
   if (!apiKey) {

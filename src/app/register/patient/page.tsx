@@ -3,7 +3,7 @@
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
-import { useSignUp } from '@clerk/nextjs'
+import { getBrowserSupabase } from '@/lib/supabase/browser'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -48,7 +48,6 @@ interface PatientFormData {
 
 export default function PatientRegistrationPage() {
   const router = useRouter()
-  const { isLoaded, signUp, setActive } = useSignUp()
   const [currentStep, setCurrentStep] = useState(1)
   const [isLoading, setIsLoading] = useState(false)
 
@@ -130,66 +129,52 @@ export default function PatientRegistrationPage() {
   }
 
   const handleSubmit = async () => {
-    if (!validateStep(currentStep) || !isLoaded) return
+    if (!validateStep(currentStep)) return
 
     setIsLoading(true)
 
     try {
-      // Create Clerk user
-      const result = await signUp.create({
-        emailAddress: formData.email,
+      // Create the Supabase auth user. A Postgres trigger (handle_new_auth_user)
+      // creates the public.users row automatically (default role 'patient') and
+      // links any pre-existing row by email — so the client must NOT set a
+      // privileged role here; the `data` below is display-only metadata.
+      const supabase = getBrowserSupabase()
+      const { data, error } = await supabase.auth.signUp({
+        email: formData.email,
         password: formData.password,
-        firstName: formData.firstName,
-        lastName: formData.lastName,
-        unsafeMetadata: {
-          phone: formData.phone,
-          dateOfBirth: formData.dateOfBirth,
-          gender: formData.gender,
-          address: formData.address,
-          city: formData.city,
-          state: formData.state,
-          zipCode: formData.zipCode,
-          country: formData.country,
-          emergencyContactName: formData.emergencyContactName,
-          emergencyContactPhone: formData.emergencyContactPhone,
-          emergencyContactRelationship: formData.emergencyContactRelationship,
-          bloodType: formData.bloodType,
-          medicalConditions: formData.medicalConditions,
-          allergies: formData.allergies,
-          medications: formData.medications,
-          insuranceProvider: formData.insuranceProvider,
-          insuranceNumber: formData.insuranceNumber
-        }
+        options: {
+          emailRedirectTo: `${window.location.origin}/auth/callback?redirect_url=/dashboard`,
+          data: {
+            first_name: formData.firstName,
+            last_name: formData.lastName,
+            full_name: `${formData.firstName} ${formData.lastName}`,
+          },
+        },
       })
 
-      // Set role metadata after creation
-      await result.update({
-        unsafeMetadata: {
-          ...result.unsafeMetadata,
-          role: 'patient'
-        }
-      })
+      if (error) {
+        toast.error(error.message || 'Registration failed. Please try again.')
+        return
+      }
 
-      // Create database records via API BEFORE sending the verification email.
-      // This ordering ensures we never send the "you're registered" email (or claim
-      // success) when the DB write failed: a failure here aborts the flow, so the
-      // user can simply retry — the Clerk sign-up attempt is still pending and the
-      // unverified email is not permanently locked.
+      const authUserId = data.user?.id
+
+      // Create the domain (patients) record via API.
+      // Defense-in-depth: the request can be silently redirected to the sign-in
+      // page (no active session yet), which returns 200 HTML and would otherwise
+      // look like a success. Require a real JSON success payload before proceeding
+      // so we never claim the DB record was created when it was not.
       const response = await fetch('/api/register/patient', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          clerkUserId: result.id,
+          authUserId,
           ...formData
         }),
       })
 
-      // Defense-in-depth: the request can be silently redirected to the sign-in
-      // page (no active session yet), which returns 200 HTML and would otherwise
-      // look like a success. Require a real JSON success payload before proceeding
-      // so we never claim the DB record was created when it was not.
       if (response.redirected || !response.headers.get('content-type')?.includes('application/json')) {
         throw new Error('Failed to create patient record. Please try again or contact support.')
       }
@@ -205,13 +190,16 @@ export default function PatientRegistrationPage() {
         throw new Error(result_json.error || 'Failed to create patient record')
       }
 
-      // DB record confirmed created — now send the verification email.
-      await signUp.prepareEmailAddressVerification({ strategy: 'email_code' })
-
-      toast.success('Registration successful! Please check your email to verify your account.')
-
-      // Redirect to verification page
-      router.push(`/verify-email?email=${encodeURIComponent(formData.email)}`)
+      // With Supabase, the confirmation email is sent as part of signUp above.
+      // If no session was returned, email confirmation is required; otherwise the
+      // user is already signed in and can go straight to the dashboard.
+      if (!data.session) {
+        toast.success('Registration successful! Please check your email to confirm your account, then sign in.')
+        router.push(`/verify-email?email=${encodeURIComponent(formData.email)}`)
+      } else {
+        toast.success('Registration successful!')
+        router.replace('/dashboard')
+      }
 
     } catch (error: unknown) {
       console.error('Registration error:', error)

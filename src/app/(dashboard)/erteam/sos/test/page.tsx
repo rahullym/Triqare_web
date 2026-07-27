@@ -1,7 +1,7 @@
 'use client'
 
 import React, { useState, useEffect } from 'react'
-import { useUser } from '@clerk/nextjs'
+import { useAuth } from '@/components/auth/AuthProvider'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -15,7 +15,7 @@ import {
 } from 'lucide-react'
 
 export default function SOSTestPage() {
-  const { user, isLoaded } = useUser()
+  const { authUser, appUser, role, loading } = useAuth()
   const [apiTest, setApiTest] = useState<{
     loading: boolean
     success: boolean
@@ -90,7 +90,7 @@ export default function SOSTestPage() {
     }
   }
 
-  if (!isLoaded) {
+  if (loading) {
     return (
       <div className="p-6">
         <div className="flex items-center justify-center h-64">
@@ -121,7 +121,7 @@ export default function SOSTestPage() {
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
-          {user ? (
+          {authUser ? (
             <div className="space-y-3">
               <div className="flex items-center space-x-2">
                 <CheckCircle className="h-5 w-5 text-green-500" />
@@ -129,19 +129,19 @@ export default function SOSTestPage() {
               </div>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
                 <div>
-                  <span className="font-medium">Name:</span> {user.fullName || 'Not set'}
+                  <span className="font-medium">Name:</span> {appUser?.fullName || 'Not set'}
                 </div>
                 <div>
-                  <span className="font-medium">Email:</span> {user.primaryEmailAddress?.emailAddress}
+                  <span className="font-medium">Email:</span> {appUser?.email ?? authUser?.email}
                 </div>
                 <div>
-                  <span className="font-medium">User ID:</span> {user.id}
+                  <span className="font-medium">User ID:</span> {authUser?.id}
                 </div>
                 <div>
-                  <span className="font-medium">Role:</span> {user.publicMetadata?.role as string || 'Not set'}
+                  <span className="font-medium">Role:</span> {role || 'Not set'}
                 </div>
               </div>
-              {user.publicMetadata?.role !== 'ert' && (
+              {role !== 'ert' && (
                 <div className="p-3 bg-yellow-50 border border-yellow-200 rounded-md">
                   <div className="flex items-center space-x-2">
                     <AlertTriangle className="h-4 w-4 text-yellow-600" />

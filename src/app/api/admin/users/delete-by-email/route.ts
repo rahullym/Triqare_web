@@ -1,91 +1,48 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { auth, clerkClient } from '@clerk/nextjs/server'
+import { requireAdmin } from '@/lib/auth/requireAdmin'
 import { createClient } from '@/lib/supabase/server'
+import { UserService } from '@/services/userService'
 
+// POST /api/admin/users/delete-by-email - Delete a user by email (admin only).
 export async function POST(request: NextRequest) {
   try {
-    const { userId: currentUserId } = await auth()
-    
-    if (!currentUserId) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-    }
-
-    // Get current user to check if they're admin
-    const client = await clerkClient()
-    const currentUser = await client.users.getUser(currentUserId)
-    const currentUserRole = currentUser.publicMetadata?.role
-    
-    if (currentUserRole !== 'admin') {
-      return NextResponse.json({ error: 'Forbidden - Admin access required' }, { status: 403 })
-    }
+    const gate = await requireAdmin()
+    if (gate.error) return gate.error
 
     const body = await request.json()
     const { email } = body
-
     if (!email) {
       return NextResponse.json({ error: 'Email is required' }, { status: 400 })
     }
 
-    const supabase = await createClient()
-
-    // Find user by email
+    const supabase = createClient()
     const { data: user, error: findError } = await supabase
       .from('users')
-      .select('id, clerk_user_id, email, full_name, role')
+      .select('id, auth_user_id, email, full_name, role')
       .eq('email', email)
-      .single()
+      .maybeSingle()
 
     if (findError || !user) {
-      return NextResponse.json({ 
-        error: 'User not found',
-        email: email
-      }, { status: 404 })
+      return NextResponse.json({ error: 'User not found', email }, { status: 404 })
     }
 
-    console.log(`Found user to delete:`, user)
-
-    // Delete from Clerk first
-    try {
-      await client.users.deleteUser(user.clerk_user_id)
-      console.log(`Deleted user from Clerk: ${user.clerk_user_id}`)
-    } catch (clerkError: any) {
-      console.error('Error deleting from Clerk:', clerkError)
-      // Continue even if Clerk deletion fails (user might not exist in Clerk)
+    // UserService.deleteUser removes the Supabase auth user (if linked) then the
+    // app row (CASCADE handles related records).
+    const { success, error } = await UserService.deleteUser(user.id)
+    if (!success) {
+      return NextResponse.json({ error: error || 'Failed to delete user' }, { status: 500 })
     }
-
-    // Delete from database (CASCADE will handle related records)
-    const { error: deleteError } = await supabase
-      .from('users')
-      .delete()
-      .eq('id', user.id)
-
-    if (deleteError) {
-      console.error('Error deleting from database:', deleteError)
-      return NextResponse.json({ 
-        error: 'Failed to delete user from database',
-        details: deleteError.message
-      }, { status: 500 })
-    }
-
-    console.log(`Successfully deleted user: ${user.email}`)
 
     return NextResponse.json({
       success: true,
       message: `Successfully deleted user: ${user.email}`,
-      user: {
-        id: user.id,
-        email: user.email,
-        full_name: user.full_name,
-        role: user.role
-      }
+      user: { id: user.id, email: user.email, full_name: user.full_name, role: user.role },
     })
-
   } catch (error) {
     console.error('Error in delete-by-email:', error)
-    return NextResponse.json({ 
-      error: 'Internal server error',
-      details: error instanceof Error ? error.message : 'Unknown error'
-    }, { status: 500 })
+    return NextResponse.json(
+      { error: 'Internal server error', details: error instanceof Error ? error.message : 'Unknown error' },
+      { status: 500 },
+    )
   }
 }
-

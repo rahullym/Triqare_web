@@ -1,20 +1,18 @@
 'use client'
 
-import { useUser } from '@clerk/nextjs'
-import { useRole } from '@/hooks/useRole'
+import { useAuth } from '@/components/auth/AuthProvider'
 import { useEffect, useState } from 'react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 
 export default function TestERTProfilePage() {
-  const { user, isLoaded } = useUser()
-  const { role, loading: roleLoading } = useRole()
+  const { authUser, appUser, role, loading: roleLoading } = useAuth()
   const [profileData, setProfileData] = useState<any>(null)
   const [profileError, setProfileError] = useState<string | null>(null)
   const [testing, setTesting] = useState(false)
 
   const testProfileAccess = async () => {
-    if (!user) return
+    if (!authUser) return
 
     setTesting(true)
     setProfileError(null)
@@ -38,7 +36,7 @@ export default function TestERTProfilePage() {
   }
 
   const testProfileUpdate = async () => {
-    if (!user) return
+    if (!authUser) return
 
     setTesting(true)
 
@@ -72,11 +70,11 @@ export default function TestERTProfilePage() {
     setTesting(false)
   }
 
-  if (!isLoaded || roleLoading) {
+  if (roleLoading) {
     return <div className="p-6">Loading...</div>
   }
 
-  if (!user) {
+  if (!authUser) {
     return (
       <div className="p-6">
         <Card>
@@ -102,9 +100,9 @@ export default function TestERTProfilePage() {
           <div>
             <h3 className="font-semibold">Current User Info:</h3>
             <div className="bg-gray-100 p-3 rounded">
-              <p><strong>Clerk ID:</strong> {user.id}</p>
-              <p><strong>Email:</strong> {user.primaryEmailAddress?.emailAddress}</p>
-              <p><strong>Name:</strong> {user.firstName} {user.lastName}</p>
+              <p><strong>Auth User ID:</strong> {authUser?.id}</p>
+              <p><strong>Email:</strong> {appUser?.email ?? authUser?.email}</p>
+              <p><strong>Name:</strong> {appUser?.firstName} {appUser?.lastName}</p>
               <p><strong>Role:</strong> {role || 'No role detected'}</p>
               <p><strong>Role Match:</strong> {role === 'ert' ? '✅ ERT Role Detected' : '❌ Not ERT Role'}</p>
             </div>

@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react'
 import Link from 'next/link'
-import { useUser } from '@clerk/nextjs'
+import { useAuth } from '@/components/auth/AuthProvider'
 import { RoleGuard } from '@/components/auth/RoleGuard'
 import { Button } from '@/components/ui/button'
 import { LoadingSkeleton } from '@/components/ui/loading-skeleton'
@@ -69,7 +69,7 @@ function StatCard({ label, value, sub, icon: Icon, tint }: {
 }
 
 export default function AdminDashboardPage() {
-  const { user } = useUser()
+  const { appUser } = useAuth()
   const [stats, setStats] = useState<AdminDashboardStats | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -154,7 +154,7 @@ export default function AdminDashboardPage() {
     )
   }
 
-  const firstName = user?.firstName
+  const firstName = appUser?.firstName
 
   return (
     <RoleGuard allowedRoles={['admin']}>

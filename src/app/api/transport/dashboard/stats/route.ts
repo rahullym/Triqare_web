@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { createClient } from '@/lib/supabase/server'
-import { auth } from '@clerk/nextjs/server'
+import { createClient, getAuthedUser } from '@/lib/supabase/server'
 
 // Canonical "completed" SOS state (an SOS reaching the hospital). Legacy 'completed'
 // does not exist in the live sos_requests status enum.
@@ -8,29 +7,24 @@ const COMPLETED_STATUS = 'Arrived at Hospital'
 
 export async function GET(request: NextRequest) {
   try {
-    const { userId: clerkUserId } = await auth()
-    if (!clerkUserId) {
+    const { user, appUser } = await getAuthedUser()
+    if (!user) {
       return NextResponse.json(
         { error: 'Unauthorized' },
         { status: 401 }
       )
     }
 
-    const supabase = await createClient()
-
-    // Get current user from database
-    const { data: currentUser, error: userError } = await supabase
-      .from('users')
-      .select('id, email, role, full_name')
-      .eq('clerk_user_id', clerkUserId)
-      .single()
-
-    if (userError || !currentUser) {
+    // appUser IS the caller's public.users row
+    if (!appUser) {
       return NextResponse.json(
         { error: 'User not found' },
         { status: 404 }
       )
     }
+
+    const currentUser: any = appUser
+    const supabase = await createClient()
 
     if (currentUser.role !== 'transport_company') {
       return NextResponse.json(

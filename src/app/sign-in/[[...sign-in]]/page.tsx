@@ -1,4 +1,4 @@
-import { SignIn } from '@clerk/nextjs'
+import { SignInForm } from '@/components/auth/SignInForm'
 import { Logo } from '@/components/ui/logo'
 
 // Only honor internal, same-origin redirect targets to avoid open-redirect abuse.
@@ -33,32 +33,9 @@ export default async function SignInPage({
           </p>
         </div>
 
-        {/* Clerk Sign-In Component */}
+        {/* Supabase Sign-In */}
         <div className="flex justify-center">
-          <SignIn
-            appearance={{
-              elements: {
-                formButtonPrimary: 'bg-[#cc3333] hover:bg-[#b32d2d] text-white font-medium py-2 px-4 rounded-md transition-all duration-200 shadow-sm hover:shadow-md',
-                card: 'bg-white shadow-xl rounded-lg border border-[#e6e6e6] p-8',
-                headerTitle: 'text-2xl font-bold text-[#1a1a1a] mb-2',
-                headerSubtitle: 'text-[#666666] text-sm mb-6',
-                socialButtonsBlockButton: 'border border-[#d1d5db] hover:bg-[#f9fafb] text-[#1a1a1a] font-medium py-2 px-4 rounded-md transition-colors duration-200',
-                socialButtonsBlockButtonText: 'text-[#1a1a1a] font-medium',
-                formFieldInput: 'w-full px-3 py-2 border border-[#d1d5db] rounded-md shadow-sm placeholder-[#999999] focus:outline-none focus:ring-2 focus:ring-[#cc3333]/50 focus:border-[#cc3333]',
-                formFieldLabel: 'block text-sm font-medium text-gray-700 mb-1',
-                footerActionLink: 'text-red-600 hover:text-red-700 font-medium',
-                identityPreviewText: 'text-gray-600',
-                identityPreviewEditButton: 'text-red-600 hover:text-red-700'
-              },
-              layout: {
-                socialButtonsPlacement: 'top',
-                socialButtonsVariant: 'blockButton'
-              }
-            }}
-            forceRedirectUrl={redirectUrl}
-            fallbackRedirectUrl="/dashboard"
-            signUpUrl="/sign-up"
-          />
+          <SignInForm redirectUrl={redirectUrl} />
         </div>
 
         {/* Footer */}
