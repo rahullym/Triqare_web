@@ -201,6 +201,74 @@ Questions? Contact ${SUPPORT}.
   })
 }
 
+// ── Emergency-contact SOS alert ─────────────────────────────────────────────
+/**
+ * Alert a patient's emergency contacts BY EMAIL when they trigger an SOS
+ * (kind='triggered') and again when they safely reach hospital (kind='resolved').
+ *
+ * This is the channel that reaches contacts who do NOT have the app — the push
+ * path (sosPush.ts) only reaches contacts who signed up and installed it. Sent
+ * one message PER recipient so contacts never see each other's addresses, and
+ * best-effort (send() no-ops without RESEND_API_KEY and swallows its own errors),
+ * so email never blocks or fails the SOS dispatch webhook.
+ */
+export async function sendSOSContactAlertEmails(args: {
+  recipients: string[]
+  patientName?: string | null
+  kind: 'triggered' | 'resolved'
+  location?: { lat: number; lon: number } | null
+}): Promise<void> {
+  const recipients = Array.from(
+    new Set(args.recipients.map((e) => e.trim().toLowerCase()).filter(Boolean)),
+  )
+  if (recipients.length === 0) return
+
+  const patient = args.patientName?.trim() || 'Someone who listed you as an emergency contact'
+  const patientH = esc(patient)
+  const mapUrl =
+    args.location && Number.isFinite(args.location.lat) && Number.isFinite(args.location.lon)
+      ? `https://www.google.com/maps/search/?api=1&query=${args.location.lat},${args.location.lon}`
+      : null
+
+  let subject: string
+  let text: string
+  let html: string
+
+  if (args.kind === 'triggered') {
+    subject = `🚨 Emergency SOS from ${patient}`
+    text = `${patient} has triggered an emergency SOS on TriQare QSoS and requested urgent medical transport. You are listed as one of their emergency contacts.
+${mapUrl ? `\nTheir location: ${mapUrl}\n` : ''}
+If you cannot reach ${patient}, call 108 (emergency services) immediately.
+
+— TriQare QSoS`
+    html = shell('🚨 Emergency SOS Alert', `
+      <p><strong>${patientH}</strong> has just triggered an <strong style="color:#cc3333">emergency SOS</strong> on TriQare QSoS and requested urgent medical transport.</p>
+      <p>You are listed as one of their emergency contacts.</p>
+      ${
+        mapUrl
+          ? `<p style="text-align:center;margin:20px 0">
+               <a href="${mapUrl}" style="background:#cc3333;color:#fff;padding:10px 18px;border-radius:6px;text-decoration:none">View their location</a>
+             </p>`
+          : ''
+      }
+      <div style="background:#fef2f2;border:1px solid #fecaca;border-radius:6px;padding:12px">
+        If you cannot reach <strong>${patientH}</strong>, call <strong>108</strong> (emergency services) immediately.
+      </div>`)
+  } else {
+    subject = `${patient} has safely arrived at the hospital`
+    text = `Update: ${patient} has safely arrived at the hospital. Their SOS is now complete.
+
+— TriQare QSoS`
+    html = shell('SOS Resolved', `
+      <p><strong>${patientH}</strong> has safely arrived at the hospital.</p>
+      <p>Their SOS is now complete. No further action is needed.</p>`)
+  }
+
+  // One message per recipient (each send() swallows its own errors → Promise.all
+  // never rejects), so a bad address or provider hiccup can't block the others.
+  await Promise.all(recipients.map((to) => send({ to, subject, html, text })))
+}
+
 // ── App feedback ────────────────────────────────────────────────────────────
 /**
  * Emails in-app feedback to the Triqare team so the mobile user never has to

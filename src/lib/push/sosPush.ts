@@ -7,6 +7,7 @@
 
 import { createClient } from '@/lib/supabase/server'
 import { sendToTokens, type PushPayload } from './fcm'
+import { sendSOSContactAlertEmails } from '@/lib/email/sendApplicationEmails'
 
 /** Matches the driver app's fallback in app/(driver)/index.tsx. */
 const DEFAULT_RADIUS_KM = 30
@@ -34,6 +35,8 @@ export interface DispatchResult {
   recipients: number
   sent: number
   failed: number
+  /** Emergency-contact alert emails attempted for this event (best-effort, fire-and-forget). */
+  emailed?: number
   /**
    * Set when the sender itself is not configured (FIREBASE_SERVICE_ACCOUNT missing
    * or unparseable on this deploy) — i.e. nothing was sent because we couldn't even
@@ -216,6 +219,99 @@ async function tokensForNearbyDrivers(
   return tokens
 }
 
+/**
+ * Tokens of this patient's emergency contacts who have their OWN app account and a
+ * live device token. A contact is linked when they accept the invite and sign up:
+ * their users row is tagged account_type='emergency_contact' + invited_by_user_id =
+ * the patient's user id (mobile linkInvitedEmergencyContactAccount does this).
+ * Phone-only contacts who never installed the app have no account/token and are
+ * unreachable here.
+ *
+ * `exclude` drops any token already in the primary audience so nobody is double-pushed.
+ */
+async function tokensForPatientEmergencyContacts(
+  supabase: ReturnType<typeof createClient>,
+  patientUserId: string | null,
+  exclude: string[] = []
+): Promise<string[]> {
+  if (!patientUserId) return []
+
+  const { data, error } = await supabase
+    .from('users')
+    .select('fcm_token')
+    .eq('invited_by_user_id', patientUserId)
+    .eq('account_type', 'emergency_contact')
+    .eq('is_active', true)
+    .not('fcm_token', 'is', null)
+
+  if (error) {
+    console.error('[push] failed to load emergency-contact accounts', error)
+    return []
+  }
+
+  const excluded = new Set(exclude)
+  const tokens: string[] = []
+  for (const r of data ?? []) {
+    const token = (r as { fcm_token: string | null }).fcm_token
+    if (token && !excluded.has(token)) tokens.push(token)
+  }
+  return tokens
+}
+
+/**
+ * Email addresses of ALL this patient's emergency contacts (the emergency_contacts
+ * table), regardless of whether they installed the app. This is the channel that
+ * reaches phone/email-only contacts the push path cannot. `emergency_contacts.patient_id`
+ * references patients(user_id) = users.id = sos_requests.patient_id, so we key off the
+ * same id the push audience uses.
+ */
+async function emailsForPatientEmergencyContacts(
+  supabase: ReturnType<typeof createClient>,
+  patientUserId: string | null
+): Promise<string[]> {
+  if (!patientUserId) return []
+
+  const { data, error } = await supabase
+    .from('emergency_contacts')
+    .select('email')
+    .eq('patient_id', patientUserId)
+    .not('email', 'is', null)
+
+  if (error) {
+    console.error('[push] failed to load emergency-contact emails', error)
+    return []
+  }
+
+  const emails: string[] = []
+  for (const r of data ?? []) {
+    const email = (r as { email: string | null }).email?.trim()
+    if (email) emails.push(email)
+  }
+  return emails
+}
+
+/**
+ * SOS lifecycle events an emergency contact is EMAILED about — the essential pair:
+ * the initial alert (they may need to act / call 108) and the all-clear on hospital
+ * arrival. Deliberately narrower than CONTACT_EVENTS to avoid emailing every
+ * intermediate transition (email fatigue + deliverability). Reaches every contact
+ * with an email address, app-installed or not.
+ */
+const EMAIL_EVENTS = new Set<SOSPushEvent>(['sos.created', 'sos.arrived_hospital'])
+
+/**
+ * SOS lifecycle events an app-installed emergency contact is notified about. Covers
+ * the full positive lifecycle; sos.no_driver / sos.cancelled are intentionally left
+ * out under the current scope (add them here + a buildContactPayload case to include).
+ */
+const CONTACT_EVENTS = new Set<SOSPushEvent>([
+  'sos.created',
+  'sos.accepted',
+  'sos.transport_arrived',
+  'sos.picked_up',
+  'sos.arrived_hospital',
+])
+
 function buildPayload(event: SOSPushEvent, row: SOSRow): PushPayload {
   const patient = row.patient_name?.trim() || 'A patient'
   const driver = row.driver_name?.trim() || 'Your driver'
@@ -283,6 +379,57 @@ function buildPayload(event: SOSPushEvent, row: SOSRow): PushPayload {
   }
 }
 
+/**
+ * Contact-facing copy for the SOS lifecycle. Distinct from buildPayload (which speaks
+ * to the patient/driver): a contact hears about SOMEONE ELSE's emergency, so every
+ * line names the patient. All events share the `sos_contact_alert` type; the mobile
+ * app routes it to the patient home (a contact holds a normal patient account).
+ */
+function buildContactPayload(event: SOSPushEvent, row: SOSRow): PushPayload {
+  const patient = row.patient_name?.trim() || 'Someone you are an emergency contact for'
+  const driver = row.driver_name?.trim() || 'A driver'
+  const data: Record<string, string> = {
+    type: 'sos_contact_alert',
+    event,
+    requestId: row.id,
+    ...(row.patient_name ? { patientName: row.patient_name } : {}),
+  }
+
+  switch (event) {
+    case 'sos.accepted':
+      return {
+        title: `Help is on the way for ${patient}`,
+        body: `${driver} accepted the SOS and is en route to ${patient}.`,
+        data,
+      }
+    case 'sos.transport_arrived':
+      return {
+        title: `Ambulance reached ${patient}`,
+        body: `${driver} has arrived at ${patient}'s location.`,
+        data,
+      }
+    case 'sos.picked_up':
+      return {
+        title: `${patient} is on the way to hospital`,
+        body: `${driver} picked up ${patient} and is heading to the hospital.`,
+        data,
+      }
+    case 'sos.arrived_hospital':
+      return {
+        title: `${patient} arrived at the hospital`,
+        body: `${patient} has reached the hospital. The SOS is now complete.`,
+        data,
+      }
+    case 'sos.created':
+    default:
+      return {
+        title: `🚨 ${patient} triggered an SOS`,
+        body: `${patient} has requested emergency transport. We'll keep you updated.`,
+        data,
+      }
+  }
+}
+
 /** Stop pushing to tokens FCM has told us are permanently dead. */
 async function pruneInvalidTokens(
   supabase: ReturnType<typeof createClient>,
@@ -322,6 +469,8 @@ export async function dispatchSOSPush(t: SOSTransition): Promise<DispatchResult>
   const event = classify(row, t)
   if (!event) return empty
 
+  // Primary audience for this event.
+  //
   // The row we just re-read is authoritative; the trigger's driver_id can already be
   // stale by the time we run. For a stand-down we must reach the driver who WAS
   // assigned at the moment of the transition, which only the trigger knows.
@@ -332,33 +481,98 @@ export async function dispatchSOSPush(t: SOSTransition): Promise<DispatchResult>
         ? await tokenForUser(supabase, t.oldDriverId)
         : await tokenForUser(supabase, row.patient_id)
 
-  if (tokens.length === 0) {
-    console.log(`[push] ${event} for ${row.id}: no reachable recipients`)
-    return { event, recipients: 0, sent: 0, failed: 0 }
+  // Secondary audience: the patient's app-installed emergency contacts, for the
+  // lifecycle events they follow. Independent of `tokens` — contacts must still hear
+  // "SOS triggered" even when no driver is nearby — and de-duplicated against it.
+  const contactTokens = CONTACT_EVENTS.has(event)
+    ? await tokensForPatientEmergencyContacts(supabase, row.patient_id, tokens)
+    : []
+
+  // Email audience: ALL emergency contacts with an email address (app-installed or
+  // not), for the alert + all-clear events. Independent of the push audience, so it
+  // must run BEFORE the "no push recipients" early-return below — a patient may have
+  // emailable contacts but no nearby driver and no app-installed contact. Awaited
+  // (not fire-and-forget) because on serverless an un-awaited send is killed when the
+  // handler returns; sendSOSContactAlertEmails swallows its own errors so it never
+  // throws or blocks the push result.
+  let emailed = 0
+  if (EMAIL_EVENTS.has(event)) {
+    const contactEmails = await emailsForPatientEmergencyContacts(supabase, row.patient_id)
+    if (contactEmails.length > 0) {
+      await sendSOSContactAlertEmails({
+        recipients: contactEmails,
+        patientName: row.patient_name,
+        kind: event === 'sos.created' ? 'triggered' : 'resolved',
+        location:
+          row.location_lat != null && row.location_lon != null
+            ? { lat: row.location_lat, lon: row.location_lon }
+            : null,
+      })
+      emailed = contactEmails.length
+      console.log(`[push] ${event} for ${row.id}: ${emailed} emergency-contact alert email(s) queued`)
+    }
   }
 
-  const result = await sendToTokens(tokens, buildPayload(event, row))
-  await pruneInvalidTokens(supabase, result.invalidTokens)
+  if (tokens.length === 0 && contactTokens.length === 0) {
+    console.log(`[push] ${event} for ${row.id}: no push recipients`)
+    return { event, recipients: 0, sent: 0, failed: 0, ...(emailed ? { emailed } : {}) }
+  }
 
-  if (result.notConfigured) {
+  let sent = 0
+  let failed = 0
+  let notConfigured = false
+  let configReason: 'missing' | 'unparseable' | undefined
+  let configLen: number | undefined
+  const invalidTokens: string[] = []
+
+  if (tokens.length > 0) {
+    const result = await sendToTokens(tokens, buildPayload(event, row))
+    sent += result.sent
+    failed += result.failed
+    invalidTokens.push(...result.invalidTokens)
+    if (result.notConfigured) {
+      notConfigured = true
+      configReason = result.configReason
+      configLen = result.configLen
+    } else {
+      console.log(
+        `[push] ${event} for ${row.id}: ${result.sent}/${tokens.length} delivered${result.failed ? `, ${result.failed} failed` : ''}`
+      )
+    }
+  }
+
+  if (contactTokens.length > 0) {
+    const result = await sendToTokens(contactTokens, buildContactPayload(event, row))
+    sent += result.sent
+    failed += result.failed
+    invalidTokens.push(...result.invalidTokens)
+    if (result.notConfigured) {
+      notConfigured = true
+      configReason = result.configReason
+      configLen = result.configLen
+    } else {
+      console.log(
+        `[push] ${event} for ${row.id}: ${result.sent}/${contactTokens.length} emergency-contact(s) notified`
+      )
+    }
+  }
+
+  await pruneInvalidTokens(supabase, invalidTokens)
+
+  if (notConfigured) {
     // Loud and unambiguous: nothing was sent because the SENDER is misconfigured
     // on this deploy, not because FCM refused anything.
     console.error(
       `[push] ${event} for ${row.id}: NOT SENT — FIREBASE_SERVICE_ACCOUNT missing/unparseable on this deploy (set it and redeploy)`
     )
-  } else {
-    console.log(
-      `[push] ${event} for ${row.id}: ${result.sent}/${tokens.length} delivered${result.failed ? `, ${result.failed} failed` : ''}`
-    )
   }
 
   return {
     event,
-    recipients: tokens.length,
-    sent: result.sent,
-    failed: result.failed,
-    ...(result.notConfigured
-      ? { notConfigured: true, configReason: result.configReason, configLen: result.configLen }
-      : {}),
+    recipients: tokens.length + contactTokens.length,
+    sent,
+    failed,
+    ...(emailed ? { emailed } : {}),
+    ...(notConfigured ? { notConfigured: true, configReason, configLen } : {}),
   }
 }
