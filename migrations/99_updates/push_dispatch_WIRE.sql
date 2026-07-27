@@ -12,15 +12,18 @@
 -- anon/PostgREST client, so the baked secret is not client-exposed. Do not GRANT
 -- EXECUTE on this function to anon/authenticated (it is only invoked by the trigger).
 --
--- BEFORE APPLYING, set the two literals below:
---   :DISPATCH_URL    = the deployed endpoint. Default below is
---                      https://portal.triqare.com/api/push/dispatch (the canonical
---                      domain — same Netlify site as triqareweb20.netlify.app, and
---                      /api/push/* is a public machine-to-machine route so no Clerk
---                      session is involved). Must be the SAME Netlify site that has
---                      FIREBASE_SERVICE_ACCOUNT, RESEND_API_KEY and PUSH_DISPATCH_SECRET.
---   :DISPATCH_SECRET = EXACTLY the value of PUSH_DISPATCH_SECRET in Netlify env.
---                      A mismatch → the endpoint answers 401 and nothing sends.
+-- BEFORE APPLYING, set the SECRET literal below:
+--   :DISPATCH_URL    = MUST be https://triqareweb20.netlify.app/api/push/dispatch.
+--                      This is the site that runs the CURRENT code (its middleware
+--                      whitelists /api/push as a public machine-to-machine route) AND
+--                      has FIREBASE_SERVICE_ACCOUNT / RESEND_API_KEY / PUSH_DISPATCH_SECRET.
+--                      DO NOT use portal.triqare.com here — verified 2026-07-27 that it
+--                      is a SEPARATE, STALE deploy that 307-redirects /api/push/dispatch
+--                      to /sign-in (its middleware lacks the /api/push allowance), so the
+--                      trigger's POST would never reach the handler and nothing would send.
+--   :DISPATCH_SECRET = EXACTLY the value of PUSH_DISPATCH_SECRET in triqareweb20's Netlify
+--                      env. A wrong POST bearer already returns 401 there (confirmed the
+--                      secret IS set), so a mismatch here → 401 and nothing sends.
 --
 -- Idempotent: re-running just replaces the function body. Safe to re-apply after
 -- rotating the secret or moving the site.
@@ -33,8 +36,8 @@ SECURITY DEFINER
 SET search_path = public
 AS $$
 DECLARE
-  -- >>> EDIT THE SECRET BELOW (URL is the canonical Netlify site; change only if you moved it) <<<
-  dispatch_url    text := 'https://portal.triqare.com/api/push/dispatch';
+  -- >>> EDIT THE SECRET BELOW. URL must stay triqareweb20 (see header — portal is a stale deploy). <<<
+  dispatch_url    text := 'https://triqareweb20.netlify.app/api/push/dispatch';
   dispatch_secret text := 'REPLACE_WITH_PUSH_DISPATCH_SECRET';
 
   prev_status    text := CASE WHEN TG_OP = 'INSERT' THEN NULL ELSE OLD.status END;
