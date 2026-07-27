@@ -220,13 +220,19 @@ async function tokensForNearbyDrivers(
 }
 
 /**
- * Tokens of this patient's emergency contacts who have their OWN app account and a
- * live device token. A contact is linked when they accept the invite and sign up:
- * their users row is tagged account_type='emergency_contact' + invited_by_user_id =
- * the patient's user id (mobile linkInvitedEmergencyContactAccount does this).
- * Phone-only contacts who never installed the app have no account/token and are
- * unreachable here.
+ * Tokens of this patient's emergency contacts who resolve to a real, active user
+ * account with a live device token.
  *
+ * The link is emergency_contacts.contact_user_id → users.id, populated by the DB
+ * triggers in emergency_contact_user_linking.sql whenever a contact's email matches
+ * an account (whether that account already existed when it was added, or signs up
+ * later). This is the fix for the old model, which only tagged users.invited_by_user_id
+ * at a brand-new account's signup and therefore never reached contacts who were already
+ * registered when they were added. Contacts with no matching account (no email, or an
+ * email nobody has registered) have contact_user_id = NULL and are unreachable by push —
+ * they still get the alert EMAIL, which keys off emergency_contacts.email directly.
+ *
+ * Two queries + JS merge (PostgREST nested embeds are unreliable DB-wide here).
  * `exclude` drops any token already in the primary audience so nobody is double-pushed.
  */
 async function tokensForPatientEmergencyContacts(
@@ -236,22 +242,45 @@ async function tokensForPatientEmergencyContacts(
 ): Promise<string[]> {
   if (!patientUserId) return []
 
-  const { data, error } = await supabase
+  // 1. Which of this patient's contacts are linked to an account?
+  const { data: contacts, error: contactErr } = await supabase
+    .from('emergency_contacts')
+    .select('contact_user_id')
+    .eq('patient_id', patientUserId)
+    .not('contact_user_id', 'is', null)
+
+  if (contactErr) {
+    // Most likely the linking migration hasn't been applied yet (column missing).
+    // Degrade quietly — the email path still reaches contacts.
+    console.error('[push] failed to load linked emergency contacts', contactErr)
+    return []
+  }
+
+  const contactUserIds = Array.from(
+    new Set(
+      (contacts ?? [])
+        .map((c) => (c as { contact_user_id: string | null }).contact_user_id)
+        .filter((id): id is string => !!id)
+    )
+  )
+  if (contactUserIds.length === 0) return []
+
+  // 2. Their live device tokens.
+  const { data: users, error: userErr } = await supabase
     .from('users')
     .select('fcm_token')
-    .eq('invited_by_user_id', patientUserId)
-    .eq('account_type', 'emergency_contact')
+    .in('id', contactUserIds)
     .eq('is_active', true)
     .not('fcm_token', 'is', null)
 
-  if (error) {
-    console.error('[push] failed to load emergency-contact accounts', error)
+  if (userErr) {
+    console.error('[push] failed to load emergency-contact tokens', userErr)
     return []
   }
 
   const excluded = new Set(exclude)
   const tokens: string[] = []
-  for (const r of data ?? []) {
+  for (const r of users ?? []) {
     const token = (r as { fcm_token: string | null }).fcm_token
     if (token && !excluded.has(token)) tokens.push(token)
   }
