@@ -61,6 +61,13 @@ export const navigationConfig: Record<UserRole, NavItem[]> = {
       description: 'Live emergency SOS requests'
     },
     {
+      title: 'Push Health',
+      href: '/admin/push-health',
+      icon: Bell,
+      roles: ['admin'],
+      description: 'FCM push notification delivery health'
+    },
+    {
       title: 'Driver Applications',
       href: '/admin/driver-applications',
       icon: FileText,
