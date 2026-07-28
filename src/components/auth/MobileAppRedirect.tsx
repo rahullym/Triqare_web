@@ -119,53 +119,28 @@ export function MobileAppRedirect({ role, userName }: MobileAppRedirectProps) {
             </ul>
           </div>
 
-          {/* Download Buttons */}
+          {/* Download Buttons — official app stores only */}
           <div className="space-y-4">
             <h3 className="font-semibold text-gray-900 text-center flex items-center justify-center">
               <Download className="w-5 h-5 mr-2 text-blue-600" />
               Download the App:
             </h3>
 
-            {/* Direct APK Download */}
-            <div className="flex justify-center">
-              <a
-                href="/Triqare-mobile-app.apk"
-                download="Triqare-mobile-app.apk"
-                className="w-full sm:w-auto"
-              >
-                <Button
-                  className="w-full bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700 text-white px-8 py-4 text-lg font-semibold shadow-lg hover:shadow-xl transition-all"
-                >
-                  <Download className="w-6 h-6 mr-3" />
-                  Download Triqare Mobile App (APK)
-                </Button>
-              </a>
-            </div>
-
-            <div className="relative">
-              <div className="absolute inset-0 flex items-center">
-                <div className="w-full border-t border-gray-300"></div>
-              </div>
-              <div className="relative flex justify-center text-sm">
-                <span className="px-2 bg-white text-gray-500">Or download from stores</span>
-              </div>
-            </div>
-
             <div className="flex flex-col sm:flex-row gap-4 justify-center">
-              <Button
-                onClick={() => window.open(config.appStoreUrl, '_blank')}
-                className={`${config.color} text-white px-6 py-3 text-lg`}
-              >
-                <Download className="w-5 h-5 mr-2" />
-                App Store
-              </Button>
-
               <Button
                 onClick={() => window.open(config.playStoreUrl, '_blank')}
                 className={`${config.color} text-white px-6 py-3 text-lg`}
               >
                 <Download className="w-5 h-5 mr-2" />
                 Google Play
+              </Button>
+
+              <Button
+                onClick={() => window.open(config.appStoreUrl, '_blank')}
+                className={`${config.color} text-white px-6 py-3 text-lg`}
+              >
+                <Download className="w-5 h-5 mr-2" />
+                App Store
               </Button>
             </div>
           </div>
