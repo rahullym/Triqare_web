@@ -98,18 +98,21 @@ export function classify(row: SOSRow, t: SOSTransition): SOSPushEvent | null {
   if (newStatus === 'Arrived at Hospital') return 'sos.arrived_hospital'
 
   if (TERMINAL_STATUSES.has(newStatus)) {
-    // A driver was already on the way and the request ended → they must stand down.
-    // This is the highest-consequence miss in the whole system: without it a driver
-    // keeps blue-lighting to an emergency that no longer exists.
-    if (oldDriverId) return 'sos.cancelled'
-
-    // Nobody was ever assigned, and the system (not the patient) ended it → the
-    // patient is still waiting and does not know help isn't coming.
+    // Nobody was ever assigned, and the SYSTEM (not the patient) ended it → the
+    // patient is still waiting and does not know help isn't coming; their contacts
+    // don't either. Checked first so a timeout is never misread as a user cancel.
     if (isSystemTimeout(row, newStatus)) return 'sos.no_driver'
 
-    // Patient cancelled before any driver accepted. They did it themselves and are
-    // looking at the screen — nothing to tell anyone.
-    return null
+    // Otherwise the request was cancelled — by the patient, or after a driver was
+    // already assigned. Two audiences hang off this:
+    //   • an assigned driver (oldDriverId) must STAND DOWN — the highest-consequence
+    //     miss in the system, or a driver keeps blue-lighting to a dead emergency;
+    //   • the emergency contacts, who were alerted on sos.created, get the ALL-CLEAR
+    //     even when the patient cancelled before any driver accepted — otherwise they
+    //     are left believing an emergency is still active.
+    // The patient themselves is deliberately NOT in this event's push audience (they
+    // did it and are looking at the screen); the driver/contact audiences handle it.
+    return 'sos.cancelled'
   }
 
   // Any other transition (e.g. a no-op re-write of the same status) is not a
@@ -141,19 +144,77 @@ async function getRadiusKm(supabase: ReturnType<typeof createClient>): Promise<n
   return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_RADIUS_KM
 }
 
-/** FCM token of a single user, if they have one and are still active. */
+/**
+ * Every live FCM token for a set of users, across ALL their devices.
+ *
+ * Unions two sources and de-duplicates:
+ *   - device_tokens: the multi-device store (one row per physical device), the
+ *     source of truth once the new APK ships.
+ *   - users.fcm_token: the legacy single-token column, still written by every app
+ *     build in parallel during the rollout.
+ * Reading both means push keeps working no matter which side (DB migration / new
+ * APK) is deployed first, and a device on an older build is still reachable.
+ *
+ * Only tokens belonging to ACTIVE users are returned — an active-user set is
+ * resolved first and device tokens are filtered against it, so a deactivated
+ * account is never pushed to even if a stale device row lingers.
+ */
+async function tokensForUsers(
+  supabase: ReturnType<typeof createClient>,
+  userIds: string[]
+): Promise<string[]> {
+  const ids = Array.from(new Set(userIds.filter(Boolean)))
+  if (ids.length === 0) return []
+
+  const tokens = new Set<string>()
+
+  // Active users + their legacy token in one read.
+  const { data: users, error: usersErr } = await supabase
+    .from('users')
+    .select('id, fcm_token')
+    .in('id', ids)
+    .eq('is_active', true)
+
+  if (usersErr) {
+    console.error('[push] failed to load users for token lookup', usersErr)
+    return []
+  }
+
+  const activeIds: string[] = []
+  for (const u of users ?? []) {
+    const row = u as { id: string; fcm_token: string | null }
+    activeIds.push(row.id)
+    if (row.fcm_token) tokens.add(row.fcm_token)
+  }
+  if (activeIds.length === 0) return []
+
+  // Every active device row for those active users. A missing table (migration not
+  // applied yet) degrades to the legacy column above rather than failing the send.
+  const { data: devices, error: devErr } = await supabase
+    .from('device_tokens')
+    .select('token')
+    .in('user_id', activeIds)
+    .eq('is_active', true)
+
+  if (devErr) {
+    console.warn('[push] device_tokens lookup failed (using legacy tokens only)', devErr.message)
+  } else {
+    for (const d of devices ?? []) {
+      const token = (d as { token: string | null }).token
+      if (token) tokens.add(token)
+    }
+  }
+
+  return [...tokens]
+}
+
+/** Every live FCM token of a single user, across all their devices. */
 async function tokenForUser(
   supabase: ReturnType<typeof createClient>,
   userId: string | null
 ): Promise<string[]> {
   if (!userId) return []
-  const { data } = await supabase
-    .from('users')
-    .select('fcm_token, is_active')
-    .eq('id', userId)
-    .maybeSingle()
-
-  return data?.fcm_token && data.is_active ? [data.fcm_token] : []
+  return tokensForUsers(supabase, [userId])
 }
 
 /**
@@ -170,7 +231,7 @@ async function tokensForNearbyDrivers(
 ): Promise<string[]> {
   const { data, error } = await supabase
     .from('drivers')
-    .select('user_id, current_latitude, current_longitude, status, users!inner(fcm_token, is_active)')
+    .select('user_id, current_latitude, current_longitude, status')
     .eq('status', 'available')
 
   if (error) {
@@ -182,17 +243,12 @@ async function tokensForNearbyDrivers(
   const sosLat = row.location_lat
   const sosLon = row.location_lon
 
-  const tokens: string[] = []
+  const eligibleUserIds: string[] = []
   let outOfRange = 0
   let noLocation = 0
 
   for (const d of data ?? []) {
-    // Supabase types the !inner embed as an array; it is 1:1 here (drivers.user_id PK).
-    const user = (Array.isArray(d.users) ? d.users[0] : d.users) as
-      | { fcm_token: string | null; is_active: boolean }
-      | undefined
-
-    if (!user?.fcm_token || !user.is_active) continue
+    if (!d.user_id) continue
 
     const hasDriverLoc = d.current_latitude != null && d.current_longitude != null
     const hasSosLoc = sosLat != null && sosLon != null
@@ -207,12 +263,16 @@ async function tokensForNearbyDrivers(
       noLocation++
     }
 
-    tokens.push(user.fcm_token)
+    eligibleUserIds.push(d.user_id)
   }
+
+  // Resolve every eligible driver's tokens across all their devices (active users
+  // only). Done in one batched lookup rather than per-driver.
+  const tokens = await tokensForUsers(supabase, eligibleUserIds)
 
   if (outOfRange || noLocation) {
     console.log(
-      `[push] sos.created audience: ${tokens.length} driver(s) — ${outOfRange} outside ${radiusKm}km, ${noLocation} included without coordinates (fail-open)`
+      `[push] sos.created audience: ${eligibleUserIds.length} driver(s) / ${tokens.length} device(s) — ${outOfRange} outside ${radiusKm}km, ${noLocation} included without coordinates (fail-open)`
     )
   }
 
@@ -265,26 +325,11 @@ async function tokensForPatientEmergencyContacts(
   )
   if (contactUserIds.length === 0) return []
 
-  // 2. Their live device tokens.
-  const { data: users, error: userErr } = await supabase
-    .from('users')
-    .select('fcm_token')
-    .in('id', contactUserIds)
-    .eq('is_active', true)
-    .not('fcm_token', 'is', null)
-
-  if (userErr) {
-    console.error('[push] failed to load emergency-contact tokens', userErr)
-    return []
-  }
-
+  // 2. Their live device tokens (all devices, both sources), minus any already in
+  //    the primary audience so nobody is double-pushed.
   const excluded = new Set(exclude)
-  const tokens: string[] = []
-  for (const r of users ?? []) {
-    const token = (r as { fcm_token: string | null }).fcm_token
-    if (token && !excluded.has(token)) tokens.push(token)
-  }
-  return tokens
+  const tokens = await tokensForUsers(supabase, contactUserIds)
+  return tokens.filter((t) => !excluded.has(t))
 }
 
 /**
@@ -320,18 +365,36 @@ async function emailsForPatientEmergencyContacts(
 }
 
 /**
- * SOS lifecycle events an emergency contact is EMAILED about — the essential pair:
- * the initial alert (they may need to act / call 108) and the all-clear on hospital
- * arrival. Deliberately narrower than CONTACT_EVENTS to avoid emailing every
- * intermediate transition (email fatigue + deliverability). Reaches every contact
+ * SOS lifecycle events an emergency contact is EMAILED about — the milestones that
+ * change what a contact should DO: the initial alert (act / call 108), the all-clear
+ * on hospital arrival, a cancellation (stand down), and — most important — a
+ * no-driver outcome (help isn't coming; check on them / call 108). The intermediate
+ * en-route transitions are push-only to avoid email fatigue. Reaches every contact
  * with an email address, app-installed or not.
  */
-const EMAIL_EVENTS = new Set<SOSPushEvent>(['sos.created', 'sos.arrived_hospital'])
+const EMAIL_EVENTS = new Set<SOSPushEvent>([
+  'sos.created',
+  'sos.arrived_hospital',
+  'sos.cancelled',
+  'sos.no_driver',
+])
 
 /**
- * SOS lifecycle events an app-installed emergency contact is notified about. Covers
- * the full positive lifecycle; sos.no_driver / sos.cancelled are intentionally left
- * out under the current scope (add them here + a buildContactPayload case to include).
+ * The email `kind` (copy variant in sendSOSContactAlertEmails) for each emailed
+ * event. Kept explicit so a cancellation / no-driver outcome is NEVER sent with the
+ * "safely arrived at hospital" all-clear copy.
+ */
+const EMAIL_KIND: Partial<Record<SOSPushEvent, 'triggered' | 'resolved' | 'cancelled' | 'no_driver'>> = {
+  'sos.created': 'triggered',
+  'sos.arrived_hospital': 'resolved',
+  'sos.cancelled': 'cancelled',
+  'sos.no_driver': 'no_driver',
+}
+
+/**
+ * SOS lifecycle events an app-installed emergency contact is push-notified about —
+ * the full lifecycle including the two endings (cancelled / no-driver), so a contact
+ * who was alerted on sos.created always hears how it ended.
  */
 const CONTACT_EVENTS = new Set<SOSPushEvent>([
   'sos.created',
@@ -339,6 +402,8 @@ const CONTACT_EVENTS = new Set<SOSPushEvent>([
   'sos.transport_arrived',
   'sos.picked_up',
   'sos.arrived_hospital',
+  'sos.cancelled',
+  'sos.no_driver',
 ])
 
 function buildPayload(event: SOSPushEvent, row: SOSRow): PushPayload {
@@ -449,6 +514,18 @@ function buildContactPayload(event: SOSPushEvent, row: SOSRow): PushPayload {
         body: `${patient} has reached the hospital. The SOS is now complete.`,
         data,
       }
+    case 'sos.cancelled':
+      return {
+        title: `${patient}'s SOS was cancelled`,
+        body: `The emergency request for ${patient} has been cancelled. No transport is being dispatched.`,
+        data,
+      }
+    case 'sos.no_driver':
+      return {
+        title: `No driver found for ${patient}`,
+        body: `We could not find a driver for ${patient}'s SOS. Please check on them, or call 108.`,
+        data,
+      }
     case 'sos.created':
     default:
       return {
@@ -459,19 +536,66 @@ function buildContactPayload(event: SOSPushEvent, row: SOSRow): PushPayload {
   }
 }
 
-/** Stop pushing to tokens FCM has told us are permanently dead. */
+/**
+ * Stop pushing to tokens FCM has told us are permanently dead. Prunes BOTH stores:
+ * the per-device row (deleted) and the legacy users.fcm_token column (nulled), so a
+ * dead token can't survive in either place.
+ */
 async function pruneInvalidTokens(
   supabase: ReturnType<typeof createClient>,
   tokens: string[]
 ): Promise<void> {
   if (tokens.length === 0) return
-  const { error } = await supabase
+
+  const { error: devErr } = await supabase
+    .from('device_tokens')
+    .delete()
+    .in('token', tokens)
+  if (devErr) console.warn('[push] failed to prune invalid device_tokens', devErr.message)
+
+  const { error: legacyErr } = await supabase
     .from('users')
     .update({ fcm_token: null, fcm_token_updated_at: null })
     .in('fcm_token', tokens)
+  if (legacyErr) console.warn('[push] failed to prune invalid legacy tokens', legacyErr.message)
 
-  if (error) console.warn('[push] failed to prune invalid tokens', error)
-  else console.log(`[push] pruned ${tokens.length} unregistered token(s)`)
+  if (!devErr || !legacyErr) console.log(`[push] pruned ${tokens.length} unregistered token(s)`)
+}
+
+/**
+ * Record one send attempt's outcome (counts only — no tokens, no PII) so delivery
+ * health is queryable instead of scattered across function logs. Best-effort: a
+ * logging failure (e.g. the table not migrated yet) must never affect the push.
+ */
+async function logDelivery(
+  supabase: ReturnType<typeof createClient>,
+  entry: {
+    requestId: string
+    event: SOSPushEvent
+    audience: 'primary' | 'contact'
+    recipients: number
+    sent: number
+    failed: number
+    invalid: number
+    notConfigured: boolean
+  }
+): Promise<void> {
+  if (entry.recipients === 0) return
+  try {
+    const { error } = await supabase.from('push_deliveries').insert({
+      request_id: entry.requestId,
+      event: entry.event,
+      audience: entry.audience,
+      recipients: entry.recipients,
+      sent: entry.sent,
+      failed: entry.failed,
+      invalid: entry.invalid,
+      not_configured: entry.notConfigured,
+    })
+    if (error) console.warn('[push] failed to log delivery', error.message)
+  } catch (err) {
+    console.warn('[push] logDelivery threw', err)
+  }
 }
 
 /**
@@ -531,7 +655,7 @@ export async function dispatchSOSPush(t: SOSTransition): Promise<DispatchResult>
       await sendSOSContactAlertEmails({
         recipients: contactEmails,
         patientName: row.patient_name,
-        kind: event === 'sos.created' ? 'triggered' : 'resolved',
+        kind: EMAIL_KIND[event] ?? 'triggered',
         location:
           row.location_lat != null && row.location_lon != null
             ? { lat: row.location_lat, lon: row.location_lon }
@@ -568,6 +692,16 @@ export async function dispatchSOSPush(t: SOSTransition): Promise<DispatchResult>
         `[push] ${event} for ${row.id}: ${result.sent}/${tokens.length} delivered${result.failed ? `, ${result.failed} failed` : ''}`
       )
     }
+    await logDelivery(supabase, {
+      requestId: row.id,
+      event,
+      audience: 'primary',
+      recipients: tokens.length,
+      sent: result.sent,
+      failed: result.failed,
+      invalid: result.invalidTokens.length,
+      notConfigured: !!result.notConfigured,
+    })
   }
 
   if (contactTokens.length > 0) {
@@ -584,6 +718,16 @@ export async function dispatchSOSPush(t: SOSTransition): Promise<DispatchResult>
         `[push] ${event} for ${row.id}: ${result.sent}/${contactTokens.length} emergency-contact(s) notified`
       )
     }
+    await logDelivery(supabase, {
+      requestId: row.id,
+      event,
+      audience: 'contact',
+      recipients: contactTokens.length,
+      sent: result.sent,
+      failed: result.failed,
+      invalid: result.invalidTokens.length,
+      notConfigured: !!result.notConfigured,
+    })
   }
 
   await pruneInvalidTokens(supabase, invalidTokens)

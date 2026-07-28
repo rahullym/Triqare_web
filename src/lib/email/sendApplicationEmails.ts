@@ -215,7 +215,7 @@ Questions? Contact ${SUPPORT}.
 export async function sendSOSContactAlertEmails(args: {
   recipients: string[]
   patientName?: string | null
-  kind: 'triggered' | 'resolved'
+  kind: 'triggered' | 'resolved' | 'cancelled' | 'no_driver'
   location?: { lat: number; lon: number } | null
 }): Promise<void> {
   const recipients = Array.from(
@@ -253,6 +253,37 @@ If you cannot reach ${patient}, call 108 (emergency services) immediately.
       }
       <div style="background:#fef2f2;border:1px solid #fecaca;border-radius:6px;padding:12px">
         If you cannot reach <strong>${patientH}</strong>, call <strong>108</strong> (emergency services) immediately.
+      </div>`)
+  } else if (args.kind === 'cancelled') {
+    subject = `${patient}'s SOS has been cancelled`
+    text = `Update: the emergency SOS from ${patient} on TriQare QSoS has been cancelled. No medical transport is being dispatched.
+
+If you believe ${patient} still needs help, contact them directly or call 108 (emergency services).
+
+— TriQare QSoS`
+    html = shell('SOS Cancelled', `
+      <p>The emergency SOS from <strong>${patientH}</strong> has been <strong>cancelled</strong>. No medical transport is being dispatched.</p>
+      <div style="background:#fffbeb;border:1px solid #fde68a;border-radius:6px;padding:12px">
+        If you believe <strong>${patientH}</strong> still needs help, contact them directly or call <strong>108</strong> (emergency services).
+      </div>`)
+  } else if (args.kind === 'no_driver') {
+    subject = `⚠️ No driver found for ${patient}'s SOS`
+    text = `Important: TriQare QSoS could not find an available driver for ${patient}'s emergency SOS. Help may NOT be on the way.
+${mapUrl ? `\nTheir location: ${mapUrl}\n` : ''}
+Please check on ${patient} now, or call 108 (emergency services) on their behalf.
+
+— TriQare QSoS`
+    html = shell('⚠️ No Driver Available', `
+      <p>TriQare QSoS could <strong style="color:#cc3333">not find an available driver</strong> for <strong>${patientH}</strong>'s emergency SOS. Help may not be on the way.</p>
+      ${
+        mapUrl
+          ? `<p style="text-align:center;margin:20px 0">
+               <a href="${mapUrl}" style="background:#cc3333;color:#fff;padding:10px 18px;border-radius:6px;text-decoration:none">View their location</a>
+             </p>`
+          : ''
+      }
+      <div style="background:#fef2f2;border:1px solid #fecaca;border-radius:6px;padding:12px">
+        Please check on <strong>${patientH}</strong> now, or call <strong>108</strong> (emergency services) on their behalf.
       </div>`)
   } else {
     subject = `${patient} has safely arrived at the hospital`
