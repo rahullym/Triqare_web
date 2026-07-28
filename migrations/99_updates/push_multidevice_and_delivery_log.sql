@@ -73,14 +73,26 @@ END $$;
 -- auth-scoped one (user_id = public.current_app_user_id()) alongside the users table.
 GRANT INSERT, UPDATE, DELETE ON public.device_tokens TO anon;
 GRANT SELECT, INSERT, UPDATE, DELETE ON public.device_tokens TO authenticated, service_role;
+-- Supabase's default privileges auto-grant SELECT on every new public table to anon
+-- and authenticated. Revoke it here: the token-less client must WRITE its own device
+-- row but must never READ (enumerate) anyone's tokens — only the server (service_role,
+-- which bypasses grants+RLS) reads. Without this, the public anon key could dump the
+-- whole table once devices register.
+REVOKE SELECT ON public.device_tokens FROM anon, authenticated;
 
 ALTER TABLE public.device_tokens ENABLE ROW LEVEL SECURITY;
 
+-- Write-only policies for the interim token-less client. There is deliberately NO
+-- SELECT policy, so RLS denies reads even if a SELECT grant ever reappears (defence in
+-- depth over the REVOKE above). Replace all three with an auth-scoped policy
+-- (user_id = public.current_app_user_id()) at the Supabase-Auth hardening cutover.
 DROP POLICY IF EXISTS "device_tokens interim client write" ON public.device_tokens;
-CREATE POLICY "device_tokens interim client write" ON public.device_tokens
-  FOR ALL
-  USING (true)
-  WITH CHECK (true);
+DROP POLICY IF EXISTS "device_tokens client insert" ON public.device_tokens;
+DROP POLICY IF EXISTS "device_tokens client update" ON public.device_tokens;
+DROP POLICY IF EXISTS "device_tokens client delete" ON public.device_tokens;
+CREATE POLICY "device_tokens client insert" ON public.device_tokens FOR INSERT WITH CHECK (true);
+CREATE POLICY "device_tokens client update" ON public.device_tokens FOR UPDATE USING (true) WITH CHECK (true);
+CREATE POLICY "device_tokens client delete" ON public.device_tokens FOR DELETE USING (true);
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- 2. push_deliveries — one row per send attempt (visibility into failures)
@@ -111,6 +123,9 @@ CREATE INDEX IF NOT EXISTS idx_push_deliveries_created ON public.push_deliveries
 -- service_role bypasses RLS and does the inserts.
 ALTER TABLE public.push_deliveries ENABLE ROW LEVEL SECURITY;
 GRANT INSERT, SELECT ON public.push_deliveries TO service_role;
+-- RLS-enabled with no client policy already denies all rows to anon/authenticated,
+-- but drop the default SELECT grant too so it's locked at both layers.
+REVOKE SELECT ON public.push_deliveries FROM anon, authenticated;
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- 3. Verify (read-only)
