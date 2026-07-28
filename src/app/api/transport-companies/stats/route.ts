@@ -1,7 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { TransportCompanyService } from '@/services/transportCompanyService'
+import { requireRole, STAFF_ROLES } from '@/lib/auth/requireRole'
 
 export async function GET(request: NextRequest) {
+  const gate = await requireRole(STAFF_ROLES)
+  if (gate.error) return gate.error
   try {
     const stats = await TransportCompanyService.getTransportCompanyStats()
 

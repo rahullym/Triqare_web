@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { announcementService } from '@/services/announcementService'
+import { requireAdmin } from '@/lib/auth/requireAdmin'
 
 export async function GET(
   request: Request,
@@ -30,6 +31,7 @@ export async function PUT(
   request: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const gate = await requireAdmin(); if (gate.error) return gate.error
   try {
     const { id } = await params
     const body = await request.json()
@@ -64,6 +66,7 @@ export async function DELETE(
   request: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const gate = await requireAdmin(); if (gate.error) return gate.error
   try {
     const { id } = await params
     const success = await announcementService.deleteAnnouncement(id)

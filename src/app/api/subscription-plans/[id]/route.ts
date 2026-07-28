@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { SubscriptionPlanService } from '@/services/subscriptionPlanService'
+import { requireAdmin } from '@/lib/auth/requireAdmin'
 
 // GET /api/subscription-plans/[id] - Get a single subscription plan
 export async function GET(
@@ -7,6 +8,9 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const gate = await requireAdmin()
+    if (gate.error) return gate.error
+
     const { id } = await params
     const result = await SubscriptionPlanService.getSubscriptionPlanById(id)
     
@@ -33,6 +37,9 @@ export async function PUT(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const gate = await requireAdmin()
+    if (gate.error) return gate.error
+
     const { id } = await params
     const body = await request.json()
     
@@ -76,6 +83,9 @@ export async function DELETE(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const gate = await requireAdmin()
+    if (gate.error) return gate.error
+
     const { id } = await params
     const result = await SubscriptionPlanService.deleteSubscriptionPlan(id)
     

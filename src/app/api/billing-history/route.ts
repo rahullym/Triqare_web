@@ -1,9 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { BillingHistoryService } from '@/services/billingHistoryService'
+import { requireAdmin } from '@/lib/auth/requireAdmin'
 
 // GET /api/billing-history - Get all billing history with optional filtering
 export async function GET(request: NextRequest) {
   try {
+    const gate = await requireAdmin()
+    if (gate.error) return gate.error
+
     const { searchParams } = new URL(request.url)
     
     const filters = {
@@ -42,6 +46,9 @@ export async function GET(request: NextRequest) {
 // POST /api/billing-history - Create a new billing history record
 export async function POST(request: NextRequest) {
   try {
+    const gate = await requireAdmin()
+    if (gate.error) return gate.error
+
     const body = await request.json()
     
     // Validate required fields

@@ -1,8 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { PatientService } from '@/services/patientService'
+import { requireAdmin } from '@/lib/auth/requireAdmin'
+import { requireRole, STAFF_ROLES } from '@/lib/auth/requireRole'
 
 // GET /api/patients - Get all patients with optional filtering
 export async function GET(request: NextRequest) {
+  // Staff-only: patient PII must not be exposed to unauthenticated/wrong-role callers
+  const gate = await requireRole(STAFF_ROLES)
+  if (gate.error) return gate.error
   try {
     const { searchParams } = new URL(request.url)
     
@@ -42,6 +47,9 @@ export async function GET(request: NextRequest) {
 
 // POST /api/patients - Create a new patient
 export async function POST(request: NextRequest) {
+  // Admin-only write
+  const gate = await requireAdmin()
+  if (gate.error) return gate.error
   try {
     const body = await request.json()
 

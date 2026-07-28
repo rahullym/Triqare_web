@@ -1,11 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { UserService } from '@/services/userService'
+import { requireAdmin } from '@/lib/auth/requireAdmin'
 
 // GET /api/users/[userId] - Get a single user by ID
 export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ userId: string }> }
 ) {
+  const gate = await requireAdmin(); if (gate.error) return gate.error
   try {
     const { userId } = await params
 
@@ -47,6 +49,7 @@ export async function PUT(
   request: NextRequest,
   { params }: { params: Promise<{ userId: string }> }
 ) {
+  const gate = await requireAdmin(); if (gate.error) return gate.error
   try {
     const { userId } = await params
     const body = await request.json()
@@ -106,6 +109,7 @@ export async function DELETE(
   request: NextRequest,
   { params }: { params: Promise<{ userId: string }> }
 ) {
+  const gate = await requireAdmin(); if (gate.error) return gate.error
   try {
     const { userId } = await params
 

@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { supabase } from '@/lib/supabase'
+import { requireRole, STAFF_ROLES } from '@/lib/auth/requireRole'
 
 export interface UserLocation {
   id: string
@@ -19,6 +20,10 @@ export interface UserLocation {
 }
 
 export async function GET() {
+  // Staff-only: map data (patient/driver locations + PII) must not be exposed to
+  // unauthenticated/wrong-role callers
+  const gate = await requireRole(STAFF_ROLES)
+  if (gate.error) return gate.error
   try {
     const locations: UserLocation[] = []
 

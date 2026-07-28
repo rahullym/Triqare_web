@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { ConfigurationService } from '@/services/configurationService'
+import { requireAdmin } from '@/lib/auth/requireAdmin'
 
 interface RouteParams {
   params: Promise<{ key: string }>
@@ -36,6 +37,7 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
 
 // PUT /api/configurations/[key] - Update a configuration by key
 export async function PUT(request: NextRequest, { params }: RouteParams) {
+  const gate = await requireAdmin(); if (gate.error) return gate.error
   try {
     const { key } = await params
     const decodedKey = decodeURIComponent(key)
@@ -68,6 +70,7 @@ export async function PUT(request: NextRequest, { params }: RouteParams) {
 
 // DELETE /api/configurations/[key] - Delete a configuration by key
 export async function DELETE(request: NextRequest, { params }: RouteParams) {
+  const gate = await requireAdmin(); if (gate.error) return gate.error
   try {
     const { key } = await params
     const decodedKey = decodeURIComponent(key)

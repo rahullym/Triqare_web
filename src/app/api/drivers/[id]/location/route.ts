@@ -1,10 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { DriverService } from '@/services/driverService'
+import { requireAdmin } from '@/lib/auth/requireAdmin'
 
 export async function PUT(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const gate = await requireAdmin()
+  if (gate.error) return gate.error
   try {
     const { id } = await params
     const body = await request.json()

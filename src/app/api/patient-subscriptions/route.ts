@@ -1,9 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { PatientSubscriptionService } from '@/services/patientSubscriptionService'
+import { requireAdmin } from '@/lib/auth/requireAdmin'
 
 // GET /api/patient-subscriptions - Get all patient subscriptions with optional filtering
 export async function GET(request: NextRequest) {
   try {
+    const gate = await requireAdmin()
+    if (gate.error) return gate.error
+
     const { searchParams } = new URL(request.url)
     
     const filters = {
@@ -41,6 +45,9 @@ export async function GET(request: NextRequest) {
 // POST /api/patient-subscriptions - Create a new patient subscription
 export async function POST(request: NextRequest) {
   try {
+    const gate = await requireAdmin()
+    if (gate.error) return gate.error
+
     const body = await request.json()
     
     // Validate required fields

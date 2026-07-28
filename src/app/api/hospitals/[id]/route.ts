@@ -1,11 +1,16 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { HospitalService } from '@/services/hospitalService'
+import { requireAdmin } from '@/lib/auth/requireAdmin'
+import { requireRole, STAFF_ROLES } from '@/lib/auth/requireRole'
 
 // GET /api/hospitals/[id] - Get a single hospital by ID
 export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  // Staff-only read
+  const gate = await requireRole(STAFF_ROLES)
+  if (gate.error) return gate.error
   try {
     const { id } = await params
 
@@ -46,6 +51,9 @@ export async function PUT(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  // Admin-only write
+  const gate = await requireAdmin()
+  if (gate.error) return gate.error
   try {
     const { id } = await params
     const body = await request.json()
@@ -109,6 +117,9 @@ export async function DELETE(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  // Admin-only write
+  const gate = await requireAdmin()
+  if (gate.error) return gate.error
   try {
     const { id } = await params
 

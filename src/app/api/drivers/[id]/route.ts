@@ -1,10 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { DriverService } from '@/services/driverService'
+import { requireAdmin } from '@/lib/auth/requireAdmin'
+import { requireRole, STAFF_ROLES } from '@/lib/auth/requireRole'
 
 export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const gate = await requireRole(STAFF_ROLES)
+  if (gate.error) return gate.error
   try {
     const resolvedParams = await params
     const driver = await DriverService.getDriverById(resolvedParams.id)
@@ -29,6 +33,8 @@ export async function PUT(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const gate = await requireAdmin()
+  if (gate.error) return gate.error
   try {
     const resolvedParams = await params
     const body = await request.json()
@@ -126,6 +132,8 @@ export async function DELETE(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const gate = await requireAdmin()
+  if (gate.error) return gate.error
   try {
     const resolvedParams = await params
     await DriverService.deleteDriver(resolvedParams.id)

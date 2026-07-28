@@ -1,7 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { announcementService } from '@/services/announcementService'
+import { requireAdmin } from '@/lib/auth/requireAdmin'
+import { requireRole, STAFF_ROLES } from '@/lib/auth/requireRole'
 
 export async function GET(request: NextRequest) {
+  const gate = await requireRole(STAFF_ROLES); if (gate.error) return gate.error
   try {
     const searchParams = request.nextUrl.searchParams
     const limit = searchParams.get('limit') ? parseInt(searchParams.get('limit')!) : undefined
@@ -19,9 +22,10 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: Request) {
+  const gate = await requireAdmin(); if (gate.error) return gate.error
   try {
     const body = await request.json()
-    
+
     if (!body.title || !body.message) {
       return NextResponse.json(
         { error: 'Title and message are required' },

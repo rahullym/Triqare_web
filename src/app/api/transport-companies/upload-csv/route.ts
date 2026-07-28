@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { supabase } from '@/lib/supabase'
 import { createSupabaseAuthUser } from '@/lib/clerk-user-creation'
-import { getAuthedUser } from '@/lib/supabase/server'
+import { requireAdmin } from '@/lib/auth/requireAdmin'
 
 interface CSVTransportCompany {
   company_name: string
@@ -153,12 +153,9 @@ async function lookupLocationIds(record: CSVTransportCompany) {
 
 export async function POST(request: NextRequest) {
   try {
-    // Require an authenticated caller (invitation tracking gate).
-    const { user } = await getAuthedUser()
-
-    if (!user) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-    }
+    // Admin-only: bulk-creating transport_company logins is a privileged write.
+    const gate = await requireAdmin()
+    if (gate.error) return gate.error
 
     const formData = await request.formData()
     const file = formData.get('file') as File | null

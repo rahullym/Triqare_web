@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { BillingHistoryService } from '@/services/billingHistoryService'
+import { requireAdmin } from '@/lib/auth/requireAdmin'
 
 // GET /api/billing-history/[id] - Get a single billing history record
 export async function GET(
@@ -7,6 +8,9 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const gate = await requireAdmin()
+    if (gate.error) return gate.error
+
     const { id } = await params
     const result = await BillingHistoryService.getBillingHistoryById(id)
     
@@ -33,6 +37,9 @@ export async function PUT(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const gate = await requireAdmin()
+    if (gate.error) return gate.error
+
     const { id } = await params
     const body = await request.json()
     
@@ -80,6 +87,9 @@ export async function DELETE(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const gate = await requireAdmin()
+    if (gate.error) return gate.error
+
     const { id } = await params
     const result = await BillingHistoryService.deleteBillingHistory(id)
     

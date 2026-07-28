@@ -1,9 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { PatientSubscriptionService } from '@/services/patientSubscriptionService'
+import { requireAdmin } from '@/lib/auth/requireAdmin'
 
 // GET /api/patient-subscriptions/stats - Get patient subscription statistics
 export async function GET(request: NextRequest) {
   try {
+    const gate = await requireAdmin()
+    if (gate.error) return gate.error
+
     const result = await PatientSubscriptionService.getPatientSubscriptionStats()
     
     if (result.error) {

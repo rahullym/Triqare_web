@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { ConfigurationService } from '@/services/configurationService'
+import { requireAdmin } from '@/lib/auth/requireAdmin'
 
 // GET /api/configurations - Get all configurations
 export async function GET() {
@@ -22,6 +23,7 @@ export async function GET() {
 
 // POST /api/configurations - Create or update a configuration
 export async function POST(request: NextRequest) {
+  const gate = await requireAdmin(); if (gate.error) return gate.error
   try {
     const body = await request.json()
 

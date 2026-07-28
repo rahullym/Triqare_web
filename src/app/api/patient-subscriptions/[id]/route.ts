@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { PatientSubscriptionService } from '@/services/patientSubscriptionService'
+import { requireAdmin } from '@/lib/auth/requireAdmin'
 
 // GET /api/patient-subscriptions/[id] - Get a single patient subscription
 export async function GET(
@@ -7,6 +8,9 @@ export async function GET(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const gate = await requireAdmin()
+    if (gate.error) return gate.error
+
     const { id } = await params
     const result = await PatientSubscriptionService.getPatientSubscriptionById(id)
     
@@ -33,6 +37,9 @@ export async function PUT(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const gate = await requireAdmin()
+    if (gate.error) return gate.error
+
     const { id } = await params
     const body = await request.json()
     
@@ -110,6 +117,9 @@ export async function DELETE(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const gate = await requireAdmin()
+    if (gate.error) return gate.error
+
     const { id } = await params
     const result = await PatientSubscriptionService.deletePatientSubscription(id)
     

@@ -1,7 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createServerClient } from '@/lib/supabase/server'
+import { requireAdmin } from '@/lib/auth/requireAdmin'
 
 export async function GET(request: NextRequest) {
+  const gate = await requireAdmin(); if (gate.error) return gate.error
   try {
     const supabase = createServerClient()
 

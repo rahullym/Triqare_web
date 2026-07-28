@@ -1,7 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { DriverService } from '@/services/driverService'
+import { requireAdmin } from '@/lib/auth/requireAdmin'
+import { requireRole, STAFF_ROLES } from '@/lib/auth/requireRole'
 
 export async function GET(request: NextRequest) {
+  const gate = await requireRole(STAFF_ROLES)
+  if (gate.error) return gate.error
   try {
     const { searchParams } = new URL(request.url)
     
@@ -37,6 +41,8 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
+  const gate = await requireAdmin()
+  if (gate.error) return gate.error
   try {
     const body = await request.json()
     

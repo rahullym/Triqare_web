@@ -1,10 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { TransportCompanyService } from '@/services/transportCompanyService'
+import { requireAdmin } from '@/lib/auth/requireAdmin'
+import { requireRole, STAFF_ROLES } from '@/lib/auth/requireRole'
 
 export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const gate = await requireRole(STAFF_ROLES)
+  if (gate.error) return gate.error
   try {
     const resolvedParams = await params
     const transportCompany = await TransportCompanyService.getTransportCompanyById(resolvedParams.id)
@@ -29,10 +33,12 @@ export async function PUT(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const gate = await requireAdmin()
+  if (gate.error) return gate.error
   try {
     const resolvedParams = await params
     const body = await request.json()
-    
+
     // Validate license_valid_till format if provided
     if (body.license_valid_till) {
       const dateRegex = /^\d{4}-\d{2}-\d{2}$/
@@ -94,6 +100,8 @@ export async function DELETE(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const gate = await requireAdmin()
+  if (gate.error) return gate.error
   try {
     const resolvedParams = await params
     await TransportCompanyService.deleteTransportCompany(resolvedParams.id)

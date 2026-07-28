@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { supabase } from '@/lib/supabase'
+import { requireAdmin } from '@/lib/auth/requireAdmin'
 
 interface CSVHospital {
   name: string
@@ -113,6 +114,9 @@ async function lookupLocationIds(record: CSVHospital) {
 }
 
 export async function POST(request: NextRequest) {
+  // Admin-only write (bulk insert)
+  const gate = await requireAdmin()
+  if (gate.error) return gate.error
   try {
     const formData = await request.formData()
     const file = formData.get('file') as File | null

@@ -1,9 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { BillingHistoryService } from '@/services/billingHistoryService'
+import { requireAdmin } from '@/lib/auth/requireAdmin'
 
 // GET /api/billing-history/stats - Get billing history statistics
 export async function GET(request: NextRequest) {
   try {
+    const gate = await requireAdmin()
+    if (gate.error) return gate.error
+
     const result = await BillingHistoryService.getBillingHistoryStats()
     
     if (result.error) {
