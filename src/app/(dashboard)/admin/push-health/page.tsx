@@ -21,6 +21,10 @@ import {
   Activity,
   AlertTriangle,
   RefreshCw,
+  ShieldCheck,
+  ShieldAlert,
+  Smartphone,
+  SendHorizontal,
 } from 'lucide-react'
 import { toast } from 'sonner'
 
@@ -57,6 +61,34 @@ interface DeliveryRow {
   invalid: number
   not_configured: boolean
   created_at: string
+}
+
+interface SelftestFirebase {
+  configured: boolean
+  reason?: 'missing' | 'unparseable'
+  len: number
+  fcmAuth: 'ok' | 'failed' | 'unconfigured' | 'unknown'
+  detail?: string
+}
+
+interface RecentDevice {
+  id: string
+  role: string | null
+  user_id: string
+  tokenTail: string
+  platform: string | null
+  created_at: string
+  is_active: boolean
+}
+
+interface Selftest {
+  firebase: SelftestFirebase
+  tokens: {
+    deviceTotal: number
+    byRole: Record<string, number>
+    legacyCount: number
+    recent: RecentDevice[]
+  }
 }
 
 const TINT = {
@@ -97,6 +129,11 @@ export default function PushHealthPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
+  const [selftest, setSelftest] = useState<Selftest | null>(null)
+  const [selftestLoading, setSelftestLoading] = useState(true)
+  const [selectedDevice, setSelectedDevice] = useState('')
+  const [sending, setSending] = useState(false)
+
   const fetchHealth = async () => {
     try {
       setLoading(true)
@@ -117,8 +154,46 @@ export default function PushHealthPage() {
     }
   }
 
+  const fetchSelftest = async () => {
+    try {
+      setSelftestLoading(true)
+      const res = await fetch('/api/admin/push-health/selftest')
+      const data = await res.json()
+      if (!res.ok || !data.success) throw new Error(data.error || 'Self-test failed')
+      setSelftest({ firebase: data.firebase, tokens: data.tokens })
+    } catch (err) {
+      console.error('Error running push self-test:', err)
+      toast.error('Push self-test failed')
+    } finally {
+      setSelftestLoading(false)
+    }
+  }
+
+  const sendTest = async () => {
+    if (!selectedDevice) return
+    try {
+      setSending(true)
+      const res = await fetch('/api/admin/push-health/selftest', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ deviceId: selectedDevice }),
+      })
+      const data = await res.json()
+      if (!res.ok || !data.success) throw new Error(data.error || 'Send failed')
+      const r = data.result as { sent: number; failed: number; notConfigured?: boolean }
+      if (r.notConfigured) toast.error('Sender not configured — nothing sent (fix FIREBASE_SERVICE_ACCOUNT)')
+      else if (r.sent > 0) toast.success('Test push sent — check the device')
+      else toast.error(`Send failed (${r.failed} rejected) — token may be dead`)
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Send failed')
+    } finally {
+      setSending(false)
+    }
+  }
+
   useEffect(() => {
     fetchHealth()
+    fetchSelftest()
   }, [])
 
   if (loading) {
@@ -168,6 +243,102 @@ export default function PushHealthPage() {
             <RefreshCw className="mr-2 h-4 w-4" />
             Refresh
           </Button>
+        </div>
+
+        {/* Pipeline self-test — proves the sender works WITHOUT a real SOS */}
+        <div className={`${CARD} p-6`}>
+          <div className="mb-4 flex items-center justify-between">
+            <h2 className="text-base font-bold text-slate-900">Pipeline self-test</h2>
+            <Button variant="outline" size="sm" onClick={fetchSelftest} className="rounded-full" disabled={selftestLoading}>
+              <RefreshCw className={`mr-2 h-4 w-4 ${selftestLoading ? 'animate-spin' : ''}`} />
+              Re-run
+            </Button>
+          </div>
+
+          {selftestLoading && !selftest ? (
+            <p className="text-sm text-slate-400">Running…</p>
+          ) : !selftest ? (
+            <p className="text-sm text-slate-400">Self-test unavailable.</p>
+          ) : (
+            <>
+              <div className="grid gap-4 md:grid-cols-2">
+                {/* FCM sender credential status */}
+                {(() => {
+                  const f = selftest.firebase
+                  const ok = f.configured && f.fcmAuth === 'ok'
+                  const bad = !f.configured || f.fcmAuth === 'failed'
+                  const Icon = ok ? ShieldCheck : ShieldAlert
+                  const tint = ok ? TINT.emerald : bad ? TINT.red : TINT.amber
+                  const headline = ok
+                    ? 'Sender OK — authenticates to FCM'
+                    : !f.configured
+                      ? `Not configured (${f.reason})`
+                      : f.fcmAuth === 'failed'
+                        ? 'Credentials rejected by FCM'
+                        : 'Configured — FCM check inconclusive'
+                  const detail = ok
+                    ? 'Push can be delivered from this deploy.'
+                    : !f.configured
+                      ? `FIREBASE_SERVICE_ACCOUNT is ${f.reason} (len ${f.len}). Set it (base64 of the sos-app-24a59-8fb38 service account) and redeploy.`
+                      : f.fcmAuth === 'failed'
+                        ? `The service account was rejected (${f.detail ?? 'auth error'}). Wrong/expired key or wrong Firebase project.`
+                        : `Reachable but unexpected: ${f.detail ?? 'unknown'}.`
+                  return (
+                    <div className="rounded-2xl bg-slate-50 p-4">
+                      <div className="mb-2 flex items-center gap-2">
+                        <span className={`flex h-8 w-8 items-center justify-center rounded-xl ${tint}`}>
+                          <Icon className="h-4 w-4" />
+                        </span>
+                        <span className="text-sm font-bold text-slate-900">FCM Sender</span>
+                      </div>
+                      <p className={`text-sm font-semibold ${ok ? 'text-emerald-700' : bad ? 'text-[#cc3333]' : 'text-amber-600'}`}>{headline}</p>
+                      <p className="mt-1 text-xs text-slate-500">{detail}</p>
+                    </div>
+                  )
+                })()}
+
+                {/* Token inventory */}
+                <div className="rounded-2xl bg-slate-50 p-4">
+                  <div className="mb-2 flex items-center gap-2">
+                    <span className={`flex h-8 w-8 items-center justify-center rounded-xl ${TINT.navy}`}>
+                      <Smartphone className="h-4 w-4" />
+                    </span>
+                    <span className="text-sm font-bold text-slate-900">Registered devices</span>
+                  </div>
+                  <p className="text-2xl font-bold text-slate-900">{selftest.tokens.deviceTotal}</p>
+                  <p className="mt-0.5 text-xs text-slate-500">
+                    {Object.entries(selftest.tokens.byRole).map(([r, n]) => `${n} ${r}`).join(' · ') || 'no device rows yet'}
+                    {selftest.tokens.legacyCount > 0 ? ` · +${selftest.tokens.legacyCount} legacy` : ''}
+                  </p>
+                  {selftest.tokens.deviceTotal === 0 && selftest.tokens.legacyCount === 0 && (
+                    <p className="mt-1 text-xs text-amber-600">No tokens registered — sign in on a device to register one.</p>
+                  )}
+                </div>
+              </div>
+
+              {/* Send a real test notification to a chosen device */}
+              <div className="mt-4 flex flex-wrap items-center gap-3 border-t border-slate-100 pt-4">
+                <span className="text-sm font-medium text-slate-600">Send a test notification:</span>
+                <select
+                  value={selectedDevice}
+                  onChange={(e) => setSelectedDevice(e.target.value)}
+                  className="min-w-[16rem] rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700"
+                >
+                  <option value="">Select a registered device…</option>
+                  {selftest.tokens.recent.map((d) => (
+                    <option key={d.id} value={d.id}>
+                      {(d.role ?? 'user')} · {d.platform ?? '?'} · {d.tokenTail} · {new Date(d.created_at).toLocaleDateString()}
+                      {d.is_active ? '' : ' (inactive)'}
+                    </option>
+                  ))}
+                </select>
+                <Button onClick={sendTest} disabled={!selectedDevice || sending} className="rounded-full bg-[#003366] hover:bg-[#00284d]">
+                  <SendHorizontal className="mr-2 h-4 w-4" />
+                  {sending ? 'Sending…' : 'Send test'}
+                </Button>
+              </div>
+            </>
+          )}
         </div>
 
         {/* Not-configured alert — the loudest possible signal that a deploy can't send */}

@@ -191,3 +191,69 @@ export async function sendToTokens(tokens: string[], payload: PushPayload): Prom
     return { sent: 0, failed: unique.length, invalidTokens: [] }
   }
 }
+
+export interface SenderVerifyResult {
+  /** FIREBASE_SERVICE_ACCOUNT is present and parses into a Firebase app. */
+  configured: boolean
+  /** When not configured: why + the raw env length (never the secret). */
+  reason?: 'missing' | 'unparseable'
+  len: number
+  /**
+   * Whether the service account can actually AUTHENTICATE to FCM. Determined by a
+   * dry-run send (delivers nothing) to a deliberately-invalid token:
+   *  - 'ok'         → FCM rejected the token but ACCEPTED the credentials → the
+   *                   service account works. This is the definitive "push can send".
+   *  - 'failed'     → FCM rejected the credentials (wrong/expired key, wrong project).
+   *  - 'unconfigured' → couldn't even init (see reason).
+   *  - 'unknown'    → an unexpected error; see detail.
+   */
+  fcmAuth: 'ok' | 'failed' | 'unconfigured' | 'unknown'
+  /** Diagnostic error code/message from the dry run (never secrets). */
+  detail?: string
+}
+
+/**
+ * Verify the sender end-to-end WITHOUT delivering anything: init the Admin SDK, then
+ * do an FCM dry-run send to a dummy token. A dry run validates credentials + message
+ * against Google's servers but never delivers, so this is a safe, on-demand health
+ * check for "is FIREBASE_SERVICE_ACCOUNT set correctly on this deploy" — the single
+ * make-or-break unknown that otherwise only surfaces on a real SOS.
+ */
+export async function verifySender(): Promise<SenderVerifyResult> {
+  const firebase = getFirebaseApp()
+  if (!firebase) {
+    const diag = getSenderConfigDiagnostic()
+    return { configured: false, reason: diag.reason, len: diag.len, fcmAuth: 'unconfigured' }
+  }
+
+  const diag = getSenderConfigDiagnostic()
+  try {
+    await getMessaging(firebase).send(
+      { token: 'push-selftest-invalid-token-000', notification: { title: 't', body: 'b' } },
+      true // dryRun — validates only, delivers nothing
+    )
+    // A dummy token can't actually succeed; if it somehow does, creds are clearly fine.
+    return { configured: true, len: diag.len, fcmAuth: 'ok' }
+  } catch (err: unknown) {
+    const code = (err as { code?: string })?.code ?? ''
+    const message = (err as { message?: string })?.message ?? String(err)
+    // Token-level rejections mean AUTH SUCCEEDED (we reached FCM; it just disliked the
+    // fake token) → the service account is good.
+    if (
+      code === 'messaging/invalid-argument' ||
+      code === 'messaging/invalid-registration-token' ||
+      code === 'messaging/registration-token-not-registered'
+    ) {
+      return { configured: true, len: diag.len, fcmAuth: 'ok' }
+    }
+    // Credential/permission failures mean the service account itself is bad.
+    if (
+      code.includes('credential') ||
+      code.includes('authentication') ||
+      /PERMISSION_DENIED|UNAUTHENTICATED|invalid_grant|account not found/i.test(message)
+    ) {
+      return { configured: true, len: diag.len, fcmAuth: 'failed', detail: code || message }
+    }
+    return { configured: true, len: diag.len, fcmAuth: 'unknown', detail: code || message }
+  }
+}
