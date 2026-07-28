@@ -47,6 +47,9 @@ next-env.d.ts
 /sourcedb/
 *.dump
 
+# user-migration output (contains plaintext temp passwords)
+migrated-users.csv
+
 # Export scripts (potentially sensitive)
 /scripts/export-*.ps1
 /scripts/export-*.js
