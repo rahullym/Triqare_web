@@ -18,10 +18,22 @@ import { getMessaging } from 'firebase-admin/messaging'
  * a channel the app has not created falls back to the silent "Miscellaneous"
  * bucket, which for an ambulance dispatch means the driver never hears it.
  *
- * v2 because a channel's sound cannot be changed after creation — the custom SOS
- * ringtone required a new id.
+ * The version suffix exists because a channel's sound cannot be changed after
+ * creation — every ringtone change requires a new id.
+ *
+ * v3 (2026-07-29): drivers heard the siren in the foreground but silence when the
+ * app was backgrounded or killed. Foreground sound comes from the app's own looping
+ * audio player; background/killed sound can only come from the CHANNEL, since no JS
+ * runs. Devices that created v2 from a build missing res/raw/sos_alert.wav got a
+ * permanently soundless channel, and channel settings are immutable — so a fresh id
+ * was the only way to give existing installs a working siren.
+ *
+ * DEPLOY ORDER MATTERS: ship the APK BEFORE this value goes live. A push naming a
+ * channel the app has not created yet falls back to the silent "Miscellaneous"
+ * bucket, so a web deploy that runs ahead of the APK rollout makes things worse, not
+ * better.
  */
-export const SOS_CHANNEL_ID = 'sos-emergency-v2'
+export const SOS_CHANNEL_ID = 'sos-emergency-v3'
 
 /**
  * The bundled SOS ringtone. Android resolves this against `res/raw` (no file
@@ -37,6 +49,24 @@ export interface PushPayload {
   data: Record<string, string>
   /** `high` wakes a dozing device immediately. Use it for anything time-critical. */
   priority?: 'high' | 'normal'
+  /**
+   * Send WITHOUT a `notification` block, so the app renders the alert itself.
+   *
+   * A message carrying a `notification` block is rendered by the OS, and in the
+   * KILLED state it never wakes our JS — which means the alert can only be the
+   * channel's one-shot 2.31s sound. The driver's SOS alert has to ring continuously
+   * like an incoming call, so it goes data-only: Firebase then delivers it to the
+   * app's headless background handler in every app state, and the app displays it
+   * via notifee with a looping siren and a full-screen intent.
+   * See Triqare-app/services/sos-call-notification.ts.
+   *
+   * The cost: nothing is displayed at all if the headless task never runs (some OEM
+   * battery killers). Use this ONLY for alerts the app is guaranteed to handle —
+   * everything else should keep its `notification` block, which the OS always shows.
+   *
+   * `title`/`body` are copied into `data` so the app still has the copy to display.
+   */
+  dataOnly?: boolean
 }
 
 export interface SendResult {
@@ -138,31 +168,54 @@ export async function sendToTokens(tokens: string[], payload: PushPayload): Prom
   const priority = payload.priority ?? 'high'
 
   try {
-    const response = await getMessaging(firebase).sendEachForMulticast({
-      tokens: unique,
-      // A `notification` block means Android/iOS render the tray notification
-      // themselves when the app is backgrounded or killed — no JS runs. The `data`
-      // block rides along for tap-routing. Foreground delivery has no OS-rendered
-      // notification, so the app re-presents it locally (see services/fcm-messaging.ts).
-      notification: { title: payload.title, body: payload.body },
-      data: payload.data,
-      android: {
-        priority,
-        notification: {
-          // Without an explicit channel the OS drops these into the low-importance
-          // "Miscellaneous" bucket — silent, no heads-up. Fatal for SOS dispatch.
-          channelId: SOS_CHANNEL_ID,
-          // On Android 8+ the CHANNEL owns the sound and this field is ignored;
-          // it still matters on older devices, so both name the SOS ringtone.
-          sound: SOS_SOUND_ANDROID,
-          defaultVibrateTimings: true,
-        },
-      },
-      apns: {
-        payload: { aps: { sound: SOS_SOUND_IOS, badge: 1 } },
-        headers: { 'apns-priority': priority === 'high' ? '10' : '5' },
-      },
-    })
+    const dataOnly = payload.dataOnly === true
+
+    // A `notification` block means Android/iOS render the tray notification
+    // themselves when the app is backgrounded or killed — no JS runs. The `data`
+    // block rides along for tap-routing. Foreground delivery has no OS-rendered
+    // notification, so the app re-presents it locally (see services/fcm-messaging.ts).
+    //
+    // A data-only message omits it — AND must omit `android.notification` too, or FCM
+    // treats the message as a notification message anyway and renders it itself,
+    // which is exactly what we are trying to avoid. What is left is `priority: high`,
+    // enough to wake a dozing device and run the headless handler.
+    const message = dataOnly
+      ? {
+          tokens: unique,
+          // No notification block, so the copy has to travel in `data`.
+          data: { ...payload.data, title: payload.title, body: payload.body },
+          android: { priority },
+          apns: {
+            // `content-available` is what makes iOS deliver a silent data push to the
+            // app. NOTE iOS cannot loop a sound from one of these — a continuous siren
+            // there needs the Critical Alerts entitlement from Apple. Android only for now.
+            payload: { aps: { 'content-available': 1 } },
+            headers: { 'apns-priority': priority === 'high' ? '10' : '5' },
+          },
+        }
+      : {
+          tokens: unique,
+          notification: { title: payload.title, body: payload.body },
+          data: payload.data,
+          android: {
+            priority,
+            notification: {
+              // Without an explicit channel the OS drops these into the low-importance
+              // "Miscellaneous" bucket — silent, no heads-up. Fatal for SOS dispatch.
+              channelId: SOS_CHANNEL_ID,
+              // On Android 8+ the CHANNEL owns the sound and this field is ignored;
+              // it still matters on older devices, so both name the SOS ringtone.
+              sound: SOS_SOUND_ANDROID,
+              defaultVibrateTimings: true,
+            },
+          },
+          apns: {
+            payload: { aps: { sound: SOS_SOUND_IOS, badge: 1 } },
+            headers: { 'apns-priority': priority === 'high' ? '10' : '5' },
+          },
+        }
+
+    const response = await getMessaging(firebase).sendEachForMulticast(message)
 
     const invalidTokens: string[] = []
     response.responses.forEach((r, i) => {
