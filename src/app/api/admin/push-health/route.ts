@@ -60,14 +60,28 @@ export async function GET(_request: NextRequest) {
     let failed = 0
     let invalid = 0
     let notConfiguredAttempts = 0
+    // Not-configured attempts NEWER than the most recent successful send. This — not
+    // the raw window count — is what should raise an alarm: once a send succeeds, the
+    // sender is provably configured on the live deploy, so every older failure is
+    // settled history. Counting the whole window instead kept the banner red for 7
+    // days after a confirmed fix, which is how a real alert gets tuned out.
+    let notConfiguredSinceLastSuccess = 0
+    let lastSuccessAt: string | null = null
     const byEvent: Record<string, { attempts: number; recipients: number; sent: number; failed: number }> = {}
 
+    // NB: `rows` is newest-first (the query orders created_at desc), so everything seen
+    // before the first sent>0 row is strictly newer than the last success.
     for (const r of rows) {
       recipients += r.recipients ?? 0
       sent += r.sent ?? 0
       failed += r.failed ?? 0
       invalid += r.invalid ?? 0
       if (r.not_configured) notConfiguredAttempts += 1
+
+      if (lastSuccessAt === null) {
+        if (r.not_configured) notConfiguredSinceLastSuccess += 1
+        if ((r.sent ?? 0) > 0) lastSuccessAt = r.created_at
+      }
 
       const e = (byEvent[r.event] ??= { attempts: 0, recipients: 0, sent: 0, failed: 0 })
       e.attempts += 1
@@ -86,8 +100,10 @@ export async function GET(_request: NextRequest) {
       failed,
       invalid,
       notConfiguredAttempts,
+      notConfiguredSinceLastSuccess,
       deliveryRate, // percent, or null when nothing was attempted
       lastAttemptAt: rows[0]?.created_at ?? null,
+      lastSuccessAt,
       byEvent: Object.entries(byEvent)
         .map(([event, v]) => ({ event, ...v }))
         .sort((a, b) => b.attempts - a.attempts),

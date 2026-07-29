@@ -44,8 +44,11 @@ interface PushHealthStats {
   failed: number
   invalid: number
   notConfiguredAttempts: number
+  /** Unconfigured failures NEWER than the last success — the only ones that mean "broken now". */
+  notConfiguredSinceLastSuccess: number
   deliveryRate: number | null
   lastAttemptAt: string | null
+  lastSuccessAt: string | null
   byEvent: ByEvent[]
   capped: boolean
 }
@@ -341,19 +344,44 @@ export default function PushHealthPage() {
           )}
         </div>
 
-        {/* Not-configured alert — the loudest possible signal that a deploy can't send */}
-        {stats.notConfiguredAttempts > 0 && (
+        {/* Not-configured alert — the loudest possible signal that a deploy can't send.
+            Gated on failures NEWER than the last successful send, not on the raw 7-day
+            count: a send that succeeded proves the live deploy is configured, so older
+            failures are settled history and must not keep this red. */}
+        {stats.notConfiguredSinceLastSuccess > 0 && (
           <div className="flex items-start gap-4 rounded-3xl border border-[#f0b4b4] bg-[#fdecec] p-5">
             <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-[#f5cccc]">
               <AlertTriangle className="h-5 w-5 text-[#cc3333]" />
             </span>
             <div>
               <p className="text-sm font-bold text-[#cc3333]">
-                {stats.notConfiguredAttempts} send attempt{stats.notConfiguredAttempts === 1 ? '' : 's'} could not be sent — the sender is not configured
+                {stats.notConfiguredSinceLastSuccess} send attempt{stats.notConfiguredSinceLastSuccess === 1 ? '' : 's'} could not be sent — the sender is not configured
               </p>
               <p className="mt-1 text-sm text-slate-600">
-                FIREBASE_SERVICE_ACCOUNT is missing or unparseable on the deploy that handled these. Nothing was
-                delivered for them. Set the env var (base64 of the sos-app-24a59-8fb38 service account) and redeploy.
+                FIREBASE_SERVICE_ACCOUNT is missing or unparseable on the live deploy, and no push has succeeded
+                since. Nothing was delivered. Set the env var (base64 of the sos-app-24a59-8fb38 service account)
+                and redeploy.
+              </p>
+            </div>
+          </div>
+        )}
+
+        {/* Resolved notice — there WERE unconfigured failures in the window, but a send has
+            succeeded since, so the gap is fixed. Says so explicitly; the counts below still
+            include the old failures and would otherwise read as an ongoing outage. */}
+        {stats.notConfiguredSinceLastSuccess === 0 && stats.notConfiguredAttempts > 0 && (
+          <div className="flex items-start gap-4 rounded-3xl border border-[#bfe3cf] bg-[#eefaf3] p-5">
+            <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-[#d3f0e0]">
+              <ShieldCheck className="h-5 w-5 text-[#1f8a54]" />
+            </span>
+            <div>
+              <p className="text-sm font-bold text-[#1f8a54]">
+                Resolved — {stats.notConfiguredAttempts} earlier attempt{stats.notConfiguredAttempts === 1 ? '' : 's'} failed on an unconfigured deploy, but push has sent successfully since
+              </p>
+              <p className="mt-1 text-sm text-slate-600">
+                Those failures stay in the {stats.windowDays}-day counts below and drag the delivery rate down until
+                they age out. Nothing to do.
+                {stats.lastSuccessAt ? ` Last successful send ${fmtTime(stats.lastSuccessAt)}.` : ''}
               </p>
             </div>
           </div>
@@ -375,9 +403,23 @@ export default function PushHealthPage() {
           <StatCard
             label="Unconfigured"
             value={stats.notConfiguredAttempts}
-            sub={stats.notConfiguredAttempts > 0 ? 'sender not set up' : 'all deploys OK'}
+            sub={
+              stats.notConfiguredSinceLastSuccess > 0
+                ? 'sender not set up'
+                : stats.notConfiguredAttempts > 0
+                  ? 'resolved · ages out of window'
+                  : 'all deploys OK'
+            }
             icon={AlertTriangle}
-            tint={stats.notConfiguredAttempts > 0 ? 'red' : 'emerald'}
+            // Red only while still broken. Historical failures go amber, not red — the
+            // count is real, but it is not an outage once a later send has succeeded.
+            tint={
+              stats.notConfiguredSinceLastSuccess > 0
+                ? 'red'
+                : stats.notConfiguredAttempts > 0
+                  ? 'amber'
+                  : 'emerald'
+            }
           />
         </div>
 
