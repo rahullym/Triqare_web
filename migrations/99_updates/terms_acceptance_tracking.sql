@@ -91,11 +91,13 @@ VALUES ('current_terms_version', 'v1.0')
 ON CONFLICT (key) DO NOTHING;
 
 -- 4. Atomic recording RPC ------------------------------------------------------
+-- Returns void (the caller doesn't need the row, and returning a table-row type
+-- to the anon role can trip PostgREST RLS-on-return handling).
 CREATE OR REPLACE FUNCTION public.record_terms_acceptance(
   p_user_id uuid,
   p_version text
 )
-RETURNS public.terms_acceptances
+RETURNS void
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = public
@@ -103,7 +105,6 @@ AS $$
 DECLARE
   v_now     timestamptz := now();
   v_version text        := btrim(p_version);
-  v_row     public.terms_acceptances;
 BEGIN
   IF p_user_id IS NULL OR v_version IS NULL OR v_version = '' THEN
     RAISE EXCEPTION 'record_terms_acceptance requires a non-null user id and version';
@@ -116,8 +117,7 @@ BEGIN
 
   -- (a) Append the permanent audit record.
   INSERT INTO public.terms_acceptances (user_id, terms_version, accepted_at)
-  VALUES (p_user_id, v_version, v_now)
-  RETURNING * INTO v_row;
+  VALUES (p_user_id, v_version, v_now);
 
   -- (b) Refresh the denormalised "latest acceptance" columns.
   UPDATE public.users
@@ -126,8 +126,6 @@ BEGIN
          terms_accepted_at = v_now,
          updated_at        = v_now
    WHERE id = p_user_id;
-
-  RETURN v_row;
 END;
 $$;
 
