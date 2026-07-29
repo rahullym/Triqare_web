@@ -273,7 +273,11 @@ export default function ERTSOSPage() {
     'Transport Arrived': sosRequests.filter(sos => sos.status === 'Transport Arrived'),
     'User Picked Up': sosRequests.filter(sos => sos.status === 'User Picked Up'),
     'Arrived at Hospital': sosRequests.filter(sos => sos.status === 'Arrived at Hospital'),
-    'Cancelled': sosRequests.filter(sos => sos.status === 'Cancelled')
+    'Cancelled': sosRequests.filter(sos => sos.status === 'Cancelled'),
+    // Its own bucket, not folded into Cancelled: a no-driver expiry is an operational
+    // failure worth seeing separately from a patient changing their mind. Without this
+    // entry a timed-out request appears under 'All' and no other tab.
+    'Timed Out': sosRequests.filter(sos => sos.status === 'Timed Out')
   }
 
   // Filter SOS requests based on search query

@@ -91,7 +91,15 @@ async function getSosTimeoutMinutes(): Promise<number> {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_SOS_TIMEOUT_MINUTES
 }
 
-/** Append a system 'Cancelled' history entry tagged as a no-driver timeout (mirrors the mobile writer). */
+/**
+ * Append the terminal 'Timed Out' history entry for a no-driver expiry.
+ *
+ * Records 'Timed Out' as itself now that the CHECK constraint permits it
+ * (migrations/99_updates/sos_lifecycle_timestamps.sql). The actor='system' tag is
+ * KEPT even though the status is now self-describing: rows written before that
+ * migration are 'Cancelled' + actor='system', and the push classifier still reads
+ * the tag to tell those apart from a real user cancel.
+ */
 function appendTimedOutHistory(existing: unknown): string {
   let arr: Array<Record<string, unknown>> = []
   try {
@@ -100,7 +108,7 @@ function appendTimedOutHistory(existing: unknown): string {
   } catch { arr = [] }
   if (!Array.isArray(arr)) arr = []
   arr.push({
-    status: 'Cancelled',
+    status: 'Timed Out',
     timestamp: new Date().toISOString(),
     actor: 'system',
     note: 'Timed out — no driver available',
@@ -343,13 +351,33 @@ export class SOSRequestService {
         // Guarded update: only flip a row that is STILL unassigned 'SOS Triggered',
         // so a driver who accepted in the race between this select and update is not
         // clobbered (the guarded predicate then matches 0 rows and we skip it).
-        const { data: updated, error: updErr } = await supabase
-          .from('sos_requests')
-          .update({ status: 'Cancelled', status_history: appendTimedOutHistory(row.status_history) })
-          .eq('id', row.id)
-          .eq('status', 'SOS Triggered')
-          .is('driver_id', null)
-          .select('id')
+        const history = appendTimedOutHistory(row.status_history)
+        const expireWith = (status: string) =>
+          supabase
+            .from('sos_requests')
+            .update({ status, status_history: history })
+            .eq('id', row.id)
+            .eq('status', 'SOS Triggered')
+            .is('driver_id', null)
+            .select('id')
+
+        let { data: updated, error: updErr } = await expireWith('Timed Out')
+
+        // 23514 = check_violation: this database has not had
+        // migrations/99_updates/sos_lifecycle_timestamps.sql applied yet, so
+        // 'Timed Out' is not a permitted status. Fall back to the old down-mapped
+        // 'Cancelled' rather than leaving the request live — an un-expired request
+        // keeps sirening on every nearby driver's phone, which is the exact failure
+        // this reaper exists to prevent. The actor='system' tag in the history above
+        // still marks it as a timeout, so nothing downstream misreads it as a user
+        // cancel. Logged at error level: this should never be the steady state.
+        if (updErr?.code === '23514') {
+          console.error(
+            `expireStaleRequests: 'Timed Out' rejected by the status CHECK constraint — apply migrations/99_updates/sos_lifecycle_timestamps.sql. Falling back to 'Cancelled' for ${row.id}.`
+          )
+          ;({ data: updated, error: updErr } = await expireWith('Cancelled'))
+        }
+
         if (updErr) {
           console.error(`expireStaleRequests: update ${row.id} failed`, updErr)
           continue

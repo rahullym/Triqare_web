@@ -1,6 +1,7 @@
 import { supabase } from '@/lib/supabase'
 import { type EmergencyContact as ExistingEmergencyContact } from '@/services/emergencyContactService'
 import { SOSRequestService } from '@/services/sosRequestService'
+import { type SOSStatus, SOS_TERMINAL_STATUSES } from '@/lib/sosStatus'
 
 export interface SOSRequest {
   id: string
@@ -9,7 +10,11 @@ export interface SOSRequest {
   assigned_at?: string
   completed_at?: string
   auto_assigned: boolean
-  status: 'SOS Triggered' | 'Driver En Route' | 'Transport Arrived' | 'User Picked Up' | 'Arrived at Hospital' | 'Cancelled'
+  // Canonical vocabulary, not a copy of it. This union had drifted — it was missing
+  // 'Timed Out' — which is exactly the failure mode that duplicating a status list
+  // invites. src/lib/sosStatus.ts is the single source of truth and is what the DB
+  // CHECK constraint mirrors.
+  status: SOSStatus
 
   // Joined data
   patient?: {
@@ -87,9 +92,9 @@ export interface Driver {
 }
 
 export class SOSService {
-  // Get historical SOS requests (completed, cancelled)
+  // Get historical SOS requests (completed, cancelled, timed out)
   static async getHistoricalSOSRequests(filters?: {
-    status?: 'Arrived at Hospital' | 'Cancelled'
+    status?: (typeof SOS_TERMINAL_STATUSES)[number]
     dateRange?: 'today' | 'week' | 'month' | 'quarter' | 'all'
     search?: string
     limit?: number
@@ -102,7 +107,9 @@ export class SOSService {
       let query = supabase
         .from('sos_requests')
         .select('*', { count: 'exact' })
-        .in('status', ['Arrived at Hospital', 'Cancelled'])
+        // Includes 'Timed Out'. Without it, every no-driver expiry would drop out of
+        // the history view the moment the reaper started recording them as such.
+        .in('status', [...SOS_TERMINAL_STATUSES])
         .order('completed_at', { ascending: false })
 
       // Apply status filter

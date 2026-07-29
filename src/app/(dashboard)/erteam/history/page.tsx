@@ -109,7 +109,12 @@ export default function ERTHistoryPage() {
 
   // Calculate statistics
   const completedCases = sosHistory.filter(h => h.status === 'Arrived at Hospital').length
-  const cancelledCases = sosHistory.filter(h => h.status === 'Cancelled').length
+  // Counts both non-transport outcomes. 'Timed Out' is now a status in its own right,
+  // and counting only 'Cancelled' would leave every no-driver expiry in totalCases but
+  // in no card, so the figures on screen would stop adding up.
+  const cancelledCases = sosHistory.filter(
+    h => h.status === 'Cancelled' || h.status === 'Timed Out'
+  ).length
   const totalCases = sosHistory.length
   const successRate = totalCases > 0 ? Math.round((completedCases / totalCases) * 100) : 0
 

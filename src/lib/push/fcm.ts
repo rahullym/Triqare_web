@@ -42,6 +42,23 @@ export const SOS_CHANNEL_ID = 'sos-emergency-v3'
 const SOS_SOUND_ANDROID = 'sos_alert'
 const SOS_SOUND_IOS = 'sos_alert.wav'
 
+/**
+ * Fallback time-to-live for any push that does not set its own.
+ *
+ * FCM's own default is FOUR WEEKS: a message sent to an unreachable device is
+ * stored and delivered whenever that device next comes online. For ambulance
+ * dispatch that is catastrophic — a driver whose phone was off received an SOS
+ * push TWO DAYS after the fact, sirening for an emergency long since over. No app
+ * code can prevent it, because the delay happens entirely inside FCM before
+ * anything of ours runs. The transport layer is the only place it can be stopped.
+ *
+ * Ten minutes suits the informational lifecycle events (driver arrived, trip
+ * complete …) — past that the app's own live screen is the truth and a stale
+ * banner is merely confusing. The dispatch and stand-down pushes override this
+ * with much shorter, situation-specific values; see sosPush.ts.
+ */
+export const DEFAULT_PUSH_TTL_SECONDS = 600
+
 export interface PushPayload {
   title: string
   body: string
@@ -49,6 +66,15 @@ export interface PushPayload {
   data: Record<string, string>
   /** `high` wakes a dozing device immediately. Use it for anything time-critical. */
   priority?: 'high' | 'normal'
+  /**
+   * How long FCM/APNs may keep trying to deliver, in seconds. Once it elapses the
+   * message is DISCARDED rather than delivered late.
+   *
+   * Set it to the remaining useful life of whatever the push is about — for a
+   * dispatch, the time left before the SOS expires. Omitted → DEFAULT_PUSH_TTL_SECONDS.
+   * Never omit it meaning "forever"; forever is what caused the stale-siren bug.
+   */
+  ttlSeconds?: number
   /**
    * Send WITHOUT a `notification` block, so the app renders the alert itself.
    *
@@ -167,6 +193,15 @@ export async function sendToTokens(tokens: string[], payload: PushPayload): Prom
 
   const priority = payload.priority ?? 'high'
 
+  // Clamped to a non-negative integer. FCM reads ttl in MILLISECONDS; APNs wants an
+  // ABSOLUTE epoch-seconds deadline, not a duration — a very easy pair to mix up,
+  // and getting either wrong silently restores the four-week default.
+  const ttlSeconds = Math.max(
+    0,
+    Math.floor(payload.ttlSeconds ?? DEFAULT_PUSH_TTL_SECONDS)
+  )
+  const apnsExpiration = String(Math.floor(Date.now() / 1000) + ttlSeconds)
+
   try {
     const dataOnly = payload.dataOnly === true
 
@@ -184,13 +219,16 @@ export async function sendToTokens(tokens: string[], payload: PushPayload): Prom
           tokens: unique,
           // No notification block, so the copy has to travel in `data`.
           data: { ...payload.data, title: payload.title, body: payload.body },
-          android: { priority },
+          android: { priority, ttl: ttlSeconds * 1000 },
           apns: {
             // `content-available` is what makes iOS deliver a silent data push to the
             // app. NOTE iOS cannot loop a sound from one of these — a continuous siren
             // there needs the Critical Alerts entitlement from Apple. Android only for now.
             payload: { aps: { 'content-available': 1 } },
-            headers: { 'apns-priority': priority === 'high' ? '10' : '5' },
+            headers: {
+              'apns-priority': priority === 'high' ? '10' : '5',
+              'apns-expiration': apnsExpiration,
+            },
           },
         }
       : {
@@ -199,6 +237,7 @@ export async function sendToTokens(tokens: string[], payload: PushPayload): Prom
           data: payload.data,
           android: {
             priority,
+            ttl: ttlSeconds * 1000,
             notification: {
               // Without an explicit channel the OS drops these into the low-importance
               // "Miscellaneous" bucket — silent, no heads-up. Fatal for SOS dispatch.
@@ -211,7 +250,10 @@ export async function sendToTokens(tokens: string[], payload: PushPayload): Prom
           },
           apns: {
             payload: { aps: { sound: SOS_SOUND_IOS, badge: 1 } },
-            headers: { 'apns-priority': priority === 'high' ? '10' : '5' },
+            headers: {
+              'apns-priority': priority === 'high' ? '10' : '5',
+              'apns-expiration': apnsExpiration,
+            },
           },
         }
 

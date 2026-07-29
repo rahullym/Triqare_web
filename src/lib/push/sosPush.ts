@@ -6,7 +6,7 @@
 // is the single definition of "what gets a push".
 
 import { createClient } from '@/lib/supabase/server'
-import { sendToTokens, type PushPayload } from './fcm'
+import { sendToTokens, DEFAULT_PUSH_TTL_SECONDS, type PushPayload } from './fcm'
 import { sendSOSContactAlertEmails } from '@/lib/email/sendApplicationEmails'
 
 /** Matches the driver app's fallback in app/(driver)/index.tsx. */
@@ -61,9 +61,36 @@ interface SOSRow {
   location_lat: number | null
   location_lon: number | null
   status_history: string | null
+  requested_at: string | null
+  /** Null on rows created before migrations/99_updates/sos_expiry.sql. */
+  expires_at: string | null
 }
 
 const TERMINAL_STATUSES = new Set(['Cancelled', 'Timed Out'])
+
+/**
+ * Seconds of useful life left in this SOS, for setting the push TTL.
+ *
+ * Prefers the server-set `expires_at`; falls back to `requested_at + 3 min` for
+ * pre-migration rows. Returns 0 when already past the deadline — the caller treats
+ * that as "do not send at all", which is the whole point: a dispatch that arrives
+ * after the emergency has expired is worse than no dispatch, because it sirens.
+ */
+function remainingLifetimeSeconds(row: SOSRow, now: number = Date.now()): number {
+  const explicit = row.expires_at ? new Date(row.expires_at).getTime() : NaN
+  const deadline = Number.isNaN(explicit)
+    ? (() => {
+        const requested = row.requested_at ? new Date(row.requested_at).getTime() : NaN
+        return Number.isNaN(requested) ? NaN : requested + 3 * 60_000
+      })()
+    : explicit
+
+  // Un-derivable deadline → fail OPEN with the default TTL rather than dropping a
+  // possibly-live emergency because of one malformed timestamp.
+  if (Number.isNaN(deadline)) return DEFAULT_PUSH_TTL_SECONDS
+
+  return Math.max(0, Math.round((deadline - now) / 1000))
+}
 
 /**
  * A no-driver timeout is persisted as 'Cancelled' (the CHECK constraint historically
@@ -229,13 +256,21 @@ async function tokensForNearbyDrivers(
   supabase: ReturnType<typeof createClient>,
   row: SOSRow
 ): Promise<string[]> {
+  // Columns are `latitude`/`longitude`. They were `current_latitude`/`current_longitude`
+  // here until 2026-07-29, which do NOT exist on the table — PostgREST rejected the
+  // whole query with 42703, the guard below swallowed it, and this returned an empty
+  // list for EVERY dispatch. No driver had ever received an SOS push; they only saw
+  // requests through the driver dashboard's own 10s polling, which made it look like
+  // background push was broken when in fact the dispatch push was never sent at all.
+  // Verified against the live table before changing.
   const { data, error } = await supabase
     .from('drivers')
-    .select('user_id, current_latitude, current_longitude, status')
+    .select('user_id, latitude, longitude, status')
     .eq('status', 'available')
 
   if (error) {
-    console.error('[push] failed to load available drivers', error)
+    // Loud, because a failure here silently means NOBODY is dispatched.
+    console.error('[push] failed to load available drivers — no driver will be paged', error)
     return []
   }
 
@@ -250,11 +285,11 @@ async function tokensForNearbyDrivers(
   for (const d of data ?? []) {
     if (!d.user_id) continue
 
-    const hasDriverLoc = d.current_latitude != null && d.current_longitude != null
+    const hasDriverLoc = d.latitude != null && d.longitude != null
     const hasSosLoc = sosLat != null && sosLon != null
 
     if (hasDriverLoc && hasSosLoc) {
-      const km = distanceKm(Number(d.current_latitude), Number(d.current_longitude), sosLat, sosLon)
+      const km = distanceKm(Number(d.latitude), Number(d.longitude), sosLat, sosLon)
       if (km > radiusKm) {
         outOfRange++
         continue
@@ -486,6 +521,38 @@ function buildPayload(event: SOSPushEvent, row: SOSRow): PushPayload {
  * line names the patient. All events share the `sos_contact_alert` type; the mobile
  * app routes it to the patient home (a contact holds a normal patient account).
  */
+/**
+ * The stand-down sent to every OTHER nearby driver the instant one of them wins the
+ * request.
+ *
+ * WHY THIS IS NOT OPTIONAL. The dispatch alert is data-only and rendered by notifee
+ * with FLAG_INSISTENT, which repeats the siren until the notification is CANCELLED.
+ * Losing drivers were never in any audience — `sos.accepted` is addressed to the
+ * patient — so with the app backgrounded or killed their phone kept ringing for a
+ * request that no longer existed, until a 60s `timeoutAfter` backstop expired it.
+ * A minute of siren for a dead emergency, in a moving vehicle, is its own hazard.
+ *
+ * Data-only on purpose: this must SILENCE an alert, not raise one. A `notification`
+ * block would have the OS post a fresh tray entry — the exact opposite. Delivered to
+ * the same headless handler that started the siren, which cancels it.
+ *
+ * TTL is deliberately tiny. A stand-down is worthless once the siren it silences has
+ * already timed out; delivering one later would just be noise on a driver's phone.
+ */
+function buildStandDownPayload(row: SOSRow): PushPayload {
+  return {
+    title: 'SOS already accepted',
+    body: 'Another driver has taken this emergency.',
+    dataOnly: true,
+    // Comfortably covers the 60s ring window plus delivery slack, and nothing more.
+    ttlSeconds: 90,
+    data: {
+      type: 'sos_request_taken',
+      requestId: row.id,
+    },
+  }
+}
+
 function buildContactPayload(event: SOSPushEvent, row: SOSRow): PushPayload {
   const patient = row.patient_name?.trim() || 'Someone you are an emergency contact for'
   const driver = row.driver_name?.trim() || 'A driver'
@@ -579,7 +646,8 @@ async function logDelivery(
   entry: {
     requestId: string
     event: SOSPushEvent
-    audience: 'primary' | 'contact'
+    /** 'standdown' = the losing drivers told to stop ringing (see buildStandDownPayload). */
+    audience: 'primary' | 'contact' | 'standdown'
     recipients: number
     sent: number
     failed: number
@@ -616,7 +684,7 @@ export async function dispatchSOSPush(t: SOSTransition): Promise<DispatchResult>
   const { data: row, error } = await supabase
     .from('sos_requests')
     .select(
-      'id, status, patient_id, patient_name, driver_id, driver_name, driver_phone, location_lat, location_lon, status_history'
+      'id, status, patient_id, patient_name, driver_id, driver_name, driver_phone, location_lat, location_lon, status_history, requested_at, expires_at'
     )
     .eq('id', t.requestId)
     .maybeSingle<SOSRow>()
@@ -628,6 +696,34 @@ export async function dispatchSOSPush(t: SOSTransition): Promise<DispatchResult>
 
   const event = classify(row, t)
   if (!event) return empty
+
+  // ── Freshness gate, dispatch only ──────────────────────────────────────────
+  // The trigger fires through pg_net, which queues; by the time we run, the
+  // request may already have been claimed, cancelled, or expired. Sending the
+  // dispatch anyway would ring every nearby driver for an emergency that is over.
+  //
+  // Scoped to sos.created on purpose. Every other event is a status REPORT about a
+  // request that is legitimately finished (arrived, cancelled, timed out) — those
+  // must still go out, or the patient and their contacts never hear how it ended.
+  if (event === 'sos.created') {
+    if (row.status !== 'SOS Triggered') {
+      console.log(
+        `[push] sos.created for ${row.id}: SKIPPED — already '${row.status}' by dispatch time`
+      )
+      return { event, recipients: 0, sent: 0, failed: 0 }
+    }
+    if (remainingLifetimeSeconds(row) <= 0) {
+      console.log(
+        `[push] sos.created for ${row.id}: SKIPPED — expired before dispatch (expires_at ${row.expires_at ?? 'unset'})`
+      )
+      return { event, recipients: 0, sent: 0, failed: 0 }
+    }
+  }
+
+  // Response-time instrumentation (#10). Captured around the audience resolution
+  // below and written once, after the send, so a live emergency never waits on a
+  // metrics round-trip.
+  const dispatchStartedAt = new Date().toISOString()
 
   // Primary audience for this event.
   //
@@ -647,6 +743,23 @@ export async function dispatchSOSPush(t: SOSTransition): Promise<DispatchResult>
   const contactTokens = CONTACT_EVENTS.has(event)
     ? await tokensForPatientEmergencyContacts(supabase, row.patient_id, tokens)
     : []
+
+  // Stand-down audience (#5): every other nearby driver still ringing for a request
+  // that has just been taken. Resolved the same way the dispatch audience was, minus
+  // the winner — whose own app is already showing the trip.
+  //
+  // tokensForNearbyDrivers filters on status='available', and the winner is 'on_trip'
+  // by now, so they are normally excluded already. The explicit subtraction stays
+  // because that driver-row sync is best-effort and can lag; silencing the winner's
+  // phone while they are driving to the patient would be a worse bug than the one
+  // this fixes.
+  let standDownTokens: string[] = []
+  if (event === 'sos.accepted') {
+    const winnerTokens = new Set(await tokenForUser(supabase, row.driver_id))
+    standDownTokens = (await tokensForNearbyDrivers(supabase, row)).filter(
+      (token) => !winnerTokens.has(token)
+    )
+  }
 
   // Email audience: ALL emergency contacts with an email address (app-installed or
   // not), for the alert + all-clear events. Independent of the push audience, so it
@@ -673,7 +786,7 @@ export async function dispatchSOSPush(t: SOSTransition): Promise<DispatchResult>
     }
   }
 
-  if (tokens.length === 0 && contactTokens.length === 0) {
+  if (tokens.length === 0 && contactTokens.length === 0 && standDownTokens.length === 0) {
     console.log(`[push] ${event} for ${row.id}: no push recipients`)
     return { event, recipients: 0, sent: 0, failed: 0, ...(emailed ? { emailed } : {}) }
   }
@@ -686,7 +799,16 @@ export async function dispatchSOSPush(t: SOSTransition): Promise<DispatchResult>
   const invalidTokens: string[] = []
 
   if (tokens.length > 0) {
-    const result = await sendToTokens(tokens, buildPayload(event, row))
+    // A dispatch may only live as long as the emergency it is dispatching. Past
+    // that FCM discards it rather than storing it for a later reconnect — the fix
+    // for a stale alert sirening days after the fact. Every other event keeps the
+    // default TTL, since a late "arrived at hospital" is merely redundant.
+    const payload =
+      event === 'sos.created'
+        ? { ...buildPayload(event, row), ttlSeconds: remainingLifetimeSeconds(row) }
+        : buildPayload(event, row)
+
+    const result = await sendToTokens(tokens, payload)
     sent += result.sent
     failed += result.failed
     invalidTokens.push(...result.invalidTokens)
@@ -737,6 +859,48 @@ export async function dispatchSOSPush(t: SOSTransition): Promise<DispatchResult>
     })
   }
 
+  if (standDownTokens.length > 0) {
+    const result = await sendToTokens(standDownTokens, buildStandDownPayload(row))
+    sent += result.sent
+    failed += result.failed
+    invalidTokens.push(...result.invalidTokens)
+    if (result.notConfigured) {
+      notConfigured = true
+      configReason = result.configReason
+      configLen = result.configLen
+    } else {
+      console.log(
+        `[push] ${event} for ${row.id}: ${result.sent}/${standDownTokens.length} driver(s) stood down`
+      )
+    }
+    await logDelivery(supabase, {
+      requestId: row.id,
+      event,
+      audience: 'standdown',
+      recipients: standDownTokens.length,
+      sent: result.sent,
+      failed: result.failed,
+      invalid: result.invalidTokens.length,
+      notConfigured: !!result.notConfigured,
+    })
+  }
+
+  // Response-time timestamps (#10), best-effort and deliberately LAST: everything
+  // above is the emergency itself, this is only measurement. A failure here is
+  // logged and ignored — instrumentation must never break a dispatch.
+  if (event === 'sos.created') {
+    const { error: timingError } = await supabase
+      .from('sos_requests')
+      .update({
+        dispatch_started_at: dispatchStartedAt,
+        notified_at: new Date().toISOString(),
+      })
+      .eq('id', row.id)
+    if (timingError) {
+      console.warn('[push] failed to record dispatch timestamps', timingError.message)
+    }
+  }
+
   await pruneInvalidTokens(supabase, invalidTokens)
 
   if (notConfigured) {
@@ -749,7 +913,7 @@ export async function dispatchSOSPush(t: SOSTransition): Promise<DispatchResult>
 
   return {
     event,
-    recipients: tokens.length + contactTokens.length,
+    recipients: tokens.length + contactTokens.length + standDownTokens.length,
     sent,
     failed,
     ...(emailed ? { emailed } : {}),

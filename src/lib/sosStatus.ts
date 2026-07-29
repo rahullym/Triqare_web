@@ -15,6 +15,10 @@ export const SOS_STATUSES = [
   'User Picked Up',
   'Arrived at Hospital',
   'Cancelled',
+  // Expiry as its own terminal state: a no-driver timeout is NOT a user cancel, and
+  // reporting/copy had been telling them apart by sniffing status_history for an
+  // actor='system' tag. See migrations/99_updates/sos_lifecycle_timestamps.sql.
+  'Timed Out',
 ] as const
 
 export type SOSStatus = (typeof SOS_STATUSES)[number]
@@ -39,6 +43,9 @@ const LEGACY_MAP: Record<string, SOSStatus> = {
   arrived_at_hospital: 'Arrived at Hospital',
   cancelled: 'Cancelled',
   canceled: 'Cancelled',
+  timed_out: 'Timed Out',
+  timedout: 'Timed Out',
+  expired: 'Timed Out',
 }
 
 /** Returns the canonical status for any input, or null if unrecognized. */
@@ -49,9 +56,22 @@ export function normalizeSOSStatus(input?: string | null): SOSStatus | null {
   return LEGACY_MAP[key] ?? null
 }
 
-/** Terminal states end the request lifecycle. */
+/**
+ * Terminal states end the request lifecycle. A request in one of these is never
+ * reactivated and never redistributed to drivers as a new emergency.
+ *
+ * Exported as a list too, because several queries need it as a value (history
+ * listings, `.in()` filters) and hand-written copies of it are what let 'Timed Out'
+ * go missing from half the codebase in the first place.
+ */
+export const SOS_TERMINAL_STATUSES = [
+  'Arrived at Hospital',
+  'Cancelled',
+  'Timed Out',
+] as const satisfies readonly SOSStatus[]
+
 export function isTerminalStatus(status?: string | null): boolean {
-  return status === 'Arrived at Hospital' || status === 'Cancelled'
+  return (SOS_TERMINAL_STATUSES as readonly string[]).includes(status ?? '')
 }
 
 export function isActiveStatus(status?: string | null): boolean {

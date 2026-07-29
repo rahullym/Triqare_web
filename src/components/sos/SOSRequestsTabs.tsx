@@ -11,7 +11,8 @@ import {
   UserPlus,
   Building2,
   CheckCircle,
-  XCircle
+  XCircle,
+  TimerOff
 } from 'lucide-react'
 import SOSRequestsDataTable from './SOSRequestsDataTable'
 
@@ -101,6 +102,15 @@ const statusConfig = [
     icon: XCircle,
     color: 'bg-gray-100 text-gray-800',
     description: 'Request cancelled or resolved without transport'
+  },
+  {
+    value: 'Timed Out',
+    label: 'Timed Out',
+    icon: TimerOff,
+    // Amber, not the gray of a cancel: this is the one terminal outcome that means
+    // the system FAILED to help someone, and it should not blend into the noise.
+    color: 'bg-amber-100 text-amber-800',
+    description: 'Expired with no driver found — nobody was dispatched'
   }
 ]
 
