@@ -40,6 +40,13 @@
 # Functions configuration
 [functions]
   node_bundler = "esbuild"
+  # Declared explicitly: without it the scheduled function in netlify/functions
+  # (expire-sos-requests.mts — the no-driver SOS timeout backstop) was never
+  # bundled, so its `*/2 * * * *` schedule never registered and stale unassigned
+  # SOS requests sat "live" forever. Verified by requesting
+  # /.netlify/functions/expire-sos-requests on the deployed site: it fell through
+  # to the Next.js middleware and 307'd to /sign-in instead of running.
+  directory = "netlify/functions"
 
 # Development settings
 [dev]

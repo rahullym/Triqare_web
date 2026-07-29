@@ -64,6 +64,8 @@ interface SOSRow {
   requested_at: string | null
   /** Null on rows created before migrations/99_updates/sos_expiry.sql. */
   expires_at: string | null
+  /** 'PATIENT' | 'EMERGENCY_CONTACT'; null on rows predating sos_trigger_source.sql. */
+  triggered_by: string | null
 }
 
 const TERMINAL_STATUSES = new Set(['Cancelled', 'Timed Out'])
@@ -76,7 +78,7 @@ const TERMINAL_STATUSES = new Set(['Cancelled', 'Timed Out'])
  * that as "do not send at all", which is the whole point: a dispatch that arrives
  * after the emergency has expired is worse than no dispatch, because it sirens.
  */
-function remainingLifetimeSeconds(row: SOSRow, now: number = Date.now()): number {
+export function remainingLifetimeSeconds(row: SOSRow, now: number = Date.now()): number {
   const explicit = row.expires_at ? new Date(row.expires_at).getTime() : NaN
   const deadline = Number.isNaN(explicit)
     ? (() => {
@@ -516,10 +518,42 @@ function buildPayload(event: SOSPushEvent, row: SOSRow): PushPayload {
 }
 
 /**
+ * The patient's own confirmation that their SOS actually left the device.
+ *
+ * WHY THIS EXISTS. The patient is the one participant who otherwise gets no proof
+ * that anything happened: nearby drivers get a siren, emergency contacts get an
+ * alert and an email, and the patient gets a screen they may already have locked or
+ * backgrounded. Pressing SOS in an emergency and then seeing nothing is
+ * indistinguishable from the request having failed — which is why UAT-SOS-005 rates
+ * this Critical.
+ *
+ * Deliberately NOT data-only, and deliberately not a siren: this is reassurance, not
+ * an alarm. Carrying a `notification` block means the OS renders it in every app
+ * state without any JS running, including on the lock screen the patient is most
+ * likely staring at. It rides the SOS channel like everything else, so it is audible
+ * — but it is the only push in the flow whose job is to lower the reader's pulse.
+ *
+ * Shares the dispatch TTL (applied at the call site): a confirmation that outlives
+ * the request it confirms would promise an ambulance for an SOS that has already
+ * expired.
+ */
+export function buildPatientConfirmationPayload(row: SOSRow): PushPayload {
+  return {
+    title: 'SOS sent',
+    body: 'Finding the nearest ambulance. Stay where you are if it is safe to do so.',
+    data: {
+      type: 'sos_confirmation',
+      requestId: row.id,
+    },
+  }
+}
+
+/**
  * Contact-facing copy for the SOS lifecycle. Distinct from buildPayload (which speaks
  * to the patient/driver): a contact hears about SOMEONE ELSE's emergency, so every
  * line names the patient. All events share the `sos_contact_alert` type; the mobile
- * app routes it to the patient home (a contact holds a normal patient account).
+ * app routes a tap to that patient's SOS detail under the contact's read-only view
+ * (a contact holds a normal patient account, so the screens live in the patient group).
  */
 /**
  * The stand-down sent to every OTHER nearby driver the instant one of them wins the
@@ -560,6 +594,11 @@ function buildContactPayload(event: SOSPushEvent, row: SOSRow): PushPayload {
     type: 'sos_contact_alert',
     event,
     requestId: row.id,
+    // Both ids so a tap opens THIS SOS directly, on the contact's read-only view
+    // of that patient. The app treats patientId as a hint only — it re-derives
+    // which patients the viewer is actually a contact for before showing
+    // anything — so a stale or wrong value costs a redirect, never a disclosure.
+    patientId: row.patient_id,
     ...(row.patient_name ? { patientName: row.patient_name } : {}),
   }
 
@@ -602,11 +641,21 @@ function buildContactPayload(event: SOSPushEvent, row: SOSRow): PushPayload {
       }
     case 'sos.created':
     default:
-      return {
-        title: `🚨 ${patient} triggered an SOS`,
-        body: `${patient} has requested emergency transport. We'll keep you updated.`,
-        data,
-      }
+      // A contact-raised SOS must not be described as the patient having triggered
+      // it. The other contacts are about to act on this, and "they pressed SOS"
+      // wrongly implies the patient is conscious and asking for help — the opposite
+      // of what a contact raising it on their behalf usually means.
+      return row.triggered_by === 'EMERGENCY_CONTACT'
+        ? {
+            title: `🚨 SOS raised for ${patient}`,
+            body: `An emergency contact has requested emergency transport for ${patient}. We'll keep you updated.`,
+            data,
+          }
+        : {
+            title: `🚨 ${patient} triggered an SOS`,
+            body: `${patient} has requested emergency transport. We'll keep you updated.`,
+            data,
+          }
   }
 }
 
@@ -647,7 +696,7 @@ async function logDelivery(
     requestId: string
     event: SOSPushEvent
     /** 'standdown' = the losing drivers told to stop ringing (see buildStandDownPayload). */
-    audience: 'primary' | 'contact' | 'standdown'
+    audience: 'primary' | 'contact' | 'standdown' | 'confirmation'
     recipients: number
     sent: number
     failed: number
@@ -684,7 +733,7 @@ export async function dispatchSOSPush(t: SOSTransition): Promise<DispatchResult>
   const { data: row, error } = await supabase
     .from('sos_requests')
     .select(
-      'id, status, patient_id, patient_name, driver_id, driver_name, driver_phone, location_lat, location_lon, status_history, requested_at, expires_at'
+      'id, status, patient_id, patient_name, driver_id, driver_name, driver_phone, location_lat, location_lon, status_history, requested_at, expires_at, triggered_by'
     )
     .eq('id', t.requestId)
     .maybeSingle<SOSRow>()
@@ -753,6 +802,17 @@ export async function dispatchSOSPush(t: SOSTransition): Promise<DispatchResult>
   // because that driver-row sync is best-effort and can lag; silencing the winner's
   // phone while they are driving to the patient would be a worse bug than the one
   // this fixes.
+  // Confirmation audience (UAT-SOS-005): the patient's own devices, so the person who
+  // raised the emergency gets proof it left the phone. Creation only — every later
+  // event already addresses the patient as its primary audience, and a second push
+  // per transition would be noise on the phone of someone in an emergency.
+  //
+  // Resolved independently of `tokens` (which is the driver broadcast on this event),
+  // so the patient is confirmed even when no driver is in range — the case where the
+  // reassurance matters most.
+  const confirmationTokens =
+    event === 'sos.created' ? await tokenForUser(supabase, row.patient_id) : []
+
   let standDownTokens: string[] = []
   if (event === 'sos.accepted') {
     const winnerTokens = new Set(await tokenForUser(supabase, row.driver_id))
@@ -786,7 +846,12 @@ export async function dispatchSOSPush(t: SOSTransition): Promise<DispatchResult>
     }
   }
 
-  if (tokens.length === 0 && contactTokens.length === 0 && standDownTokens.length === 0) {
+  if (
+    tokens.length === 0 &&
+    contactTokens.length === 0 &&
+    standDownTokens.length === 0 &&
+    confirmationTokens.length === 0
+  ) {
     console.log(`[push] ${event} for ${row.id}: no push recipients`)
     return { event, recipients: 0, sent: 0, failed: 0, ...(emailed ? { emailed } : {}) }
   }
@@ -852,6 +917,35 @@ export async function dispatchSOSPush(t: SOSTransition): Promise<DispatchResult>
       event,
       audience: 'contact',
       recipients: contactTokens.length,
+      sent: result.sent,
+      failed: result.failed,
+      invalid: result.invalidTokens.length,
+      notConfigured: !!result.notConfigured,
+    })
+  }
+
+  if (confirmationTokens.length > 0) {
+    const result = await sendToTokens(confirmationTokens, {
+      ...buildPatientConfirmationPayload(row),
+      ttlSeconds: remainingLifetimeSeconds(row),
+    })
+    sent += result.sent
+    failed += result.failed
+    invalidTokens.push(...result.invalidTokens)
+    if (result.notConfigured) {
+      notConfigured = true
+      configReason = result.configReason
+      configLen = result.configLen
+    } else {
+      console.log(
+        `[push] ${event} for ${row.id}: ${result.sent}/${confirmationTokens.length} patient confirmation(s) delivered`
+      )
+    }
+    await logDelivery(supabase, {
+      requestId: row.id,
+      event,
+      audience: 'confirmation',
+      recipients: confirmationTokens.length,
       sent: result.sent,
       failed: result.failed,
       invalid: result.invalidTokens.length,
