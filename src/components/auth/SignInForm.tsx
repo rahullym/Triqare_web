@@ -17,9 +17,8 @@ export function SignInForm({ redirectUrl }: { redirectUrl: string }) {
 
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
-  const [loading, setLoading] = useState<null | 'password' | 'google' | 'apple' | 'reset'>(null)
+  const [loading, setLoading] = useState<null | 'password' | 'google' | 'apple'>(null)
   const [error, setError] = useState<string | null>(null)
-  const [notice, setNotice] = useState<string | null>(null)
 
   const callbackUrl = () =>
     `${window.location.origin}/auth/callback?redirect_url=${encodeURIComponent(redirectUrl)}`
@@ -27,7 +26,6 @@ export function SignInForm({ redirectUrl }: { redirectUrl: string }) {
   async function signInWithPassword(e: React.FormEvent) {
     e.preventDefault()
     setError(null)
-    setNotice(null)
     setLoading('password')
     const { error } = await supabase.auth.signInWithPassword({ email, password })
     if (error) {
@@ -41,7 +39,6 @@ export function SignInForm({ redirectUrl }: { redirectUrl: string }) {
 
   async function signInWithOAuth(provider: 'google' | 'apple') {
     setError(null)
-    setNotice(null)
     setLoading(provider)
     const { error } = await supabase.auth.signInWithOAuth({
       provider,
@@ -54,21 +51,12 @@ export function SignInForm({ redirectUrl }: { redirectUrl: string }) {
     }
   }
 
-  async function sendReset() {
-    if (!email) {
-      setError('Enter your email above first, then tap "Forgot password?".')
-      return
-    }
-    setError(null)
-    setLoading('reset')
-    const { error } = await supabase.auth.resetPasswordForEmail(email, {
-      // Route through the callback so the PKCE recovery code is exchanged for a
-      // session, then land on the reset form.
-      redirectTo: `${window.location.origin}/auth/callback?redirect_url=/auth/reset`,
-    })
-    setLoading(null)
-    if (error) setError(error.message)
-    else setNotice('Password reset email sent. Check your inbox.')
+  // The reset email carries a 6-digit code, not a link, so the reset page owns the
+  // whole flow (send code → type code + new password). Hand it the typed email so
+  // the user doesn't retype it.
+  function goToReset() {
+    const address = email.trim()
+    router.push(address ? `/auth/reset?email=${encodeURIComponent(address)}` : '/auth/reset')
   }
 
   return (
@@ -79,11 +67,6 @@ export function SignInForm({ redirectUrl }: { redirectUrl: string }) {
       {error && (
         <div className="mb-4 rounded-md bg-red-50 border border-red-200 px-3 py-2 text-sm text-red-700">
           {error}
-        </div>
-      )}
-      {notice && (
-        <div className="mb-4 rounded-md bg-green-50 border border-green-200 px-3 py-2 text-sm text-green-700">
-          {notice}
         </div>
       )}
 
@@ -130,11 +113,11 @@ export function SignInForm({ redirectUrl }: { redirectUrl: string }) {
             <label className="block text-sm font-medium text-gray-700">Password</label>
             <button
               type="button"
-              onClick={sendReset}
+              onClick={goToReset}
               disabled={loading !== null}
               className="text-xs font-medium text-red-600 hover:text-red-700"
             >
-              {loading === 'reset' ? 'Sending…' : 'Forgot password?'}
+              Forgot password?
             </button>
           </div>
           <input

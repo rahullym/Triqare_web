@@ -702,9 +702,18 @@ async function logDelivery(
     failed: number
     invalid: number
     notConfigured: boolean
+    /**
+     * Record the row even with zero recipients. Set for the dispatch audience, where
+     * "nobody was paged" is the single most important thing to know and used to leave
+     * NO trace at all: the blanket zero-recipient skip below meant an SOS that reached
+     * no driver looked identical to one that was never dispatched. That is how the
+     * 2026-07-30 blackout stayed invisible — five real SOS requests resolved to zero
+     * driver tokens and push_deliveries simply had no `primary` row for any of them.
+     */
+    allowZero?: boolean
   }
 ): Promise<void> {
-  if (entry.recipients === 0) return
+  if (entry.recipients === 0 && !entry.allowZero) return
   try {
     const { error } = await supabase.from('push_deliveries').insert({
       request_id: entry.requestId,
@@ -844,6 +853,27 @@ export async function dispatchSOSPush(t: SOSTransition): Promise<DispatchResult>
       emailed = contactEmails.length
       console.log(`[push] ${event} for ${row.id}: ${emailed} emergency-contact alert email(s) queued`)
     }
+  }
+
+  // A dispatch that paged nobody is the loudest possible failure for an SOS app, so
+  // record it as a first-class outcome rather than an absent row. Logged here — before
+  // the early-return below and outside the `tokens.length > 0` send block — so it is
+  // captured whether or not the other audiences had anyone in them.
+  if (event === 'sos.created' && tokens.length === 0) {
+    console.error(
+      `[push] sos.created for ${row.id}: NO DRIVER WAS PAGED — zero device tokens across all available drivers`
+    )
+    await logDelivery(supabase, {
+      requestId: row.id,
+      event,
+      audience: 'primary',
+      recipients: 0,
+      sent: 0,
+      failed: 0,
+      invalid: 0,
+      notConfigured: false,
+      allowZero: true,
+    })
   }
 
   if (

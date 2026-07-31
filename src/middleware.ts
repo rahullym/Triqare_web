@@ -42,6 +42,9 @@ const PUBLIC_PREFIXES = [
   '/test-users',
   // The OAuth code-exchange landing route.
   '/auth/callback',
+  // Password reset — the emailed 6-digit code is typed here, so the visitor has
+  // no session yet (verifyOtp creates one).
+  '/auth/reset',
 ]
 
 function isPublic(pathname: string): boolean {
