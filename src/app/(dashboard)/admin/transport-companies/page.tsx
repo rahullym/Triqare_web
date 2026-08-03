@@ -530,6 +530,22 @@ export default function TransportCompaniesPage() {
               </Button>
             </div>
 
+            <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900 space-y-1">
+              <p className="font-semibold">Before you upload</p>
+              <ul className="list-disc pl-4 space-y-0.5">
+                <li>
+                  Wrap any value containing a comma in double quotes, e.g.{' '}
+                  <code>&quot;123 Main Street, Kochi&quot;</code>.
+                </li>
+                <li>Phone numbers must be 10-digit Indian mobile numbers.</li>
+                <li>
+                  Dates use DD-MM-YYYY, DD/MM/YYYY or YYYY-MM-DD. Country, state, city and pincode
+                  must match existing master data exactly.
+                </li>
+                <li>Import companies before drivers — drivers reference companies by name.</li>
+              </ul>
+            </div>
+
             <div className="space-y-2">
               <Label htmlFor="csv-file">Select CSV File</Label>
               <Input

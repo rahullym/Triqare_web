@@ -3,6 +3,9 @@ import { createClient } from '@/lib/supabase/server'
 import { createSupabaseAuthUser } from '@/lib/clerk-user-creation'
 import { requireAdmin } from '@/lib/auth/requireAdmin'
 import { UserService } from '@/services/userService'
+import { parseCsv, missingHeaders } from '@/lib/csv/parseCsv'
+import { lookupTransportCompanyId, resolveLocationIds } from '@/lib/csv/lookups'
+import { EMAIL_REGEX, PHONE_REGEX } from '@/lib/validation/driverApplication'
 
 // Service-role client (bypasses RLS) for privileged CSV provisioning.
 const supabase = createClient()
@@ -25,107 +28,10 @@ interface CSVDriver {
   pincode?: string
 }
 
-// Parse CSV string to array of objects
-function parseCSV(csvText: string): CSVDriver[] {
-  const lines = csvText.trim().split('\n')
-  if (lines.length < 2) return []
-
-  const headers = lines[0].split(',').map(h => h.trim().toLowerCase().replace(/\s+/g, '_'))
-  const records: CSVDriver[] = []
-
-  for (let i = 1; i < lines.length; i++) {
-    const values = parseCSVLine(lines[i])
-    if (values.length === 0) continue
-
-    const record: Record<string, string> = {}
-    headers.forEach((header, index) => {
-      record[header] = values[index]?.trim() || ''
-    })
-    records.push(record as unknown as CSVDriver)
-  }
-
-  return records
-}
-
-// Parse a single CSV line handling quoted values
-function parseCSVLine(line: string): string[] {
-  const result: string[] = []
-  let current = ''
-  let inQuotes = false
-
-  for (let i = 0; i < line.length; i++) {
-    const char = line[i]
-    if (char === '"') {
-      inQuotes = !inQuotes
-    } else if (char === ',' && !inQuotes) {
-      result.push(current.trim())
-      current = ''
-    } else {
-      current += char
-    }
-  }
-  result.push(current.trim())
-  return result
-}
-
-// Lookup location IDs by name
-async function lookupLocationIds(record: CSVDriver) {
-  let country_id = null, state_id = null, city_id = null, pincode_id = null
-
-  if (record.country_name) {
-    const { data: country } = await supabase
-      .from('countries')
-      .select('id')
-      .ilike('name', record.country_name.trim())
-      .single()
-    country_id = country?.id || null
-  }
-
-  if (country_id && record.state_name) {
-    const { data: state } = await supabase
-      .from('states')
-      .select('id')
-      .eq('country_id', country_id)
-      .ilike('name', record.state_name.trim())
-      .single()
-    state_id = state?.id || null
-  }
-
-  if (state_id && record.city_name) {
-    const { data: city } = await supabase
-      .from('cities')
-      .select('id')
-      .eq('state_id', state_id)
-      .ilike('name', record.city_name.trim())
-      .single()
-    city_id = city?.id || null
-  }
-
-  if (city_id && record.pincode) {
-    const { data: pincode } = await supabase
-      .from('pincodes')
-      .select('id')
-      .eq('city_id', city_id)
-      .ilike('code', record.pincode.trim())
-      .single()
-    pincode_id = pincode?.id || null
-  }
-
-  return { country_id, state_id, city_id, pincode_id }
-}
-
-// Lookup transport company by name
-async function lookupTransportCompany(companyName: string) {
-  if (!companyName) return null
-
-  const { data: company } = await supabase
-    .from('transport_companies')
-    .select('user_id')
-    .ilike('company_name', companyName.trim())
-    .single()
-
-  return company?.user_id || null
-}
+// Columns the importer cannot work without. Checked against the header row once,
+// up front, so a stale template fails with one clear message instead of one
+// "missing required fields" per data row.
+const REQUIRED_HEADERS = ['full_name', 'email', 'license_number']
 
 export async function POST(request: NextRequest) {
   try {
@@ -141,25 +47,78 @@ export async function POST(request: NextRequest) {
     }
 
     const csvText = await file.text()
-    const records = parseCSV(csvText)
+    const parsed = parseCsv(csvText)
 
-    if (records.length === 0) {
-      return NextResponse.json({ error: 'No valid records found in CSV' }, { status: 400 })
+    const absent = missingHeaders(parsed.headers, REQUIRED_HEADERS)
+    if (absent.length > 0) {
+      return NextResponse.json(
+        {
+          error:
+            `The file is missing required column(s): ${absent.join(', ')}. ` +
+            'Download the template to get the expected columns.',
+        },
+        { status: 400 }
+      )
+    }
+
+    if (parsed.rows.length === 0) {
+      return NextResponse.json(
+        { error: parsed.errors[0] ?? 'No valid records found in CSV', errors: parsed.errors },
+        { status: 400 }
+      )
     }
 
     const results = {
       success: 0,
-      failed: 0,
-      errors: [] as string[],
+      // Malformed rows never reach the import loop, so seed the failure count with
+      // them — otherwise a file where half the rows had a stray comma reports
+      // "0 failed" while quietly importing only the other half.
+      failed: parsed.errors.length,
+      errors: [...parsed.errors],
       usersCreated: 0,
       createdUsers: [] as any[]
     }
 
-    for (const record of records) {
+    // Emails seen earlier IN THIS FILE. The existing-user check below reads the
+    // database, which does not yet know about a row created moments ago in the
+    // same upload — so a file listing the same driver twice used to create the
+    // first and fail the second with a confusing "already exists".
+    const seenEmails = new Set<string>()
+
+    for (const { line, values } of parsed.rows) {
+      const record = values as unknown as CSVDriver
       try {
         // Validate required fields
         if (!record.full_name || !record.email || !record.license_number) {
-          results.errors.push(`Row missing required fields: ${record.full_name || record.email || 'Unknown'}`)
+          results.errors.push(
+            `Row ${line}: full_name, email and license_number are all required.`
+          )
+          results.failed++
+          continue
+        }
+
+        const email = record.email.trim().toLowerCase()
+        if (!EMAIL_REGEX.test(email)) {
+          results.errors.push(`Row ${line}: "${record.email}" is not a valid email address.`)
+          results.failed++
+          continue
+        }
+
+        // Drivers are India-only, enforced on the application form and the driver
+        // profile screen. Import bypassed it entirely, which is how a driver who
+        // can never be dispatched gets into the fleet.
+        const phone = record.phone?.trim()
+        if (phone && !PHONE_REGEX.test(phone)) {
+          results.errors.push(
+            `Row ${line}: "${phone}" is not a valid 10-digit Indian mobile number ` +
+              '(no country code, no leading zero).'
+          )
+          results.failed++
+          continue
+        }
+
+        if (seenEmails.has(email)) {
+          results.errors.push(`Row ${line}: ${email} appears more than once in this file.`)
           results.failed++
           continue
         }
@@ -168,14 +127,48 @@ export async function POST(request: NextRequest) {
         const { data: existingUser } = await supabase
           .from('users')
           .select('id')
-          .eq('email', record.email.trim())
+          .eq('email', email)
           .maybeSingle()
 
         if (existingUser) {
-          results.errors.push(`Email already exists: ${record.email}`)
+          results.errors.push(`Row ${line}: email already exists: ${email}`)
           results.failed++
           continue
         }
+
+        // Resolve every name reference BEFORE creating the login. Doing it after
+        // meant a bad company name left behind an orphan auth user that the
+        // operator then had to clean up by hand.
+        const companyName = record.transport_company_name?.trim()
+        let transportCompanyId: string | null = null
+        if (companyName) {
+          const company = await lookupTransportCompanyId(supabase, companyName)
+          if (company.status === 'found') {
+            transportCompanyId = company.id
+          } else {
+            results.errors.push(
+              company.status === 'ambiguous'
+                ? `Row ${line}: transport company "${companyName}" matches ${company.count} records — it is ambiguous.`
+                : company.status === 'error'
+                  ? `Row ${line}: transport company "${companyName}" could not be looked up: ${company.message}`
+                  : `Row ${line}: transport company "${companyName}" was not found. Import transport companies first.`
+            )
+            results.failed++
+            continue
+          }
+        }
+
+        const { ids: locationIds, errors: locationErrors } = await resolveLocationIds(
+          supabase,
+          record
+        )
+        if (locationErrors.length > 0) {
+          results.errors.push(`Row ${line}: ${locationErrors.join(' ')}`)
+          results.failed++
+          continue
+        }
+
+        seenEmails.add(email)
 
         // Create the login (Supabase auth user). The handle_new_auth_user() DB
         // trigger auto-creates the public.users row and links it — so we must NOT
@@ -188,7 +181,7 @@ export async function POST(request: NextRequest) {
         )
 
         if (!userCreationResult.success || !userCreationResult.appUserId) {
-          results.errors.push(`Failed to create user ${record.email}: ${userCreationResult.error || 'user row not provisioned'}`)
+          results.errors.push(`Row ${line}: failed to create user ${email}: ${userCreationResult.error || 'user row not provisioned'}`)
           results.failed++
           continue
         }
@@ -201,14 +194,20 @@ export async function POST(request: NextRequest) {
           phone: record.phone || undefined,
         })
 
-        // Get location IDs and transport company
-        const locationIds = await lookupLocationIds(record)
-        const transportCompanyId = await lookupTransportCompany(record.transport_company_name || '')
-
+        // An unrecognised status used to be silently rewritten to 'available'.
+        // For a fleet-dispatch flag that is worth saying out loud, so a typo like
+        // "Available " or "active" is corrected in the spreadsheet rather than
+        // discovered later as a driver who is on shift when they should not be.
         const validStatuses = ['available', 'assigned', 'on_trip', 'inactive']
-        const status = record.status && validStatuses.includes(record.status.toLowerCase())
-          ? record.status.toLowerCase()
-          : 'available'
+        const rawStatus = record.status?.trim().toLowerCase()
+        if (rawStatus && !validStatuses.includes(rawStatus)) {
+          results.errors.push(
+            `Row ${line}: status "${record.status}" is not one of ${validStatuses.join(', ')}.`
+          )
+          results.failed++
+          continue
+        }
+        const status = rawStatus || 'available'
 
         // Upsert the driver profile keyed on the provisioned users.id.
         const { error: driverError } = await supabase
@@ -227,7 +226,7 @@ export async function POST(request: NextRequest) {
           }, { onConflict: 'user_id' })
 
         if (driverError) {
-          results.errors.push(`Failed to create driver record for ${record.email}: ${driverError.message}`)
+          results.errors.push(`Row ${line}: failed to create driver record for ${email}: ${driverError.message}`)
           results.failed++
         } else {
           results.success++
@@ -239,13 +238,16 @@ export async function POST(request: NextRequest) {
           })
         }
       } catch (err) {
-        results.errors.push(`Error processing ${record.full_name}: ${err instanceof Error ? err.message : 'Unknown error'}`)
+        results.errors.push(`Row ${line}: ${err instanceof Error ? err.message : 'Unknown error'}`)
         results.failed++
       }
     }
 
     return NextResponse.json({
-      message: `Created ${results.usersCreated} drivers successfully. ${results.failed} failed. Users can login by resetting their password.`,
+      message:
+        results.failed > 0
+          ? `Created ${results.usersCreated} drivers. ${results.failed} row(s) were rejected and imported nothing — see the errors below. Imported users can log in by resetting their password.`
+          : `Created ${results.usersCreated} drivers successfully. Users can log in by resetting their password.`,
       ...results
     })
   } catch (error) {

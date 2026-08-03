@@ -767,6 +767,26 @@ export default function DriversPage() {
               </Button>
             </div>
 
+            {/* Drivers reference their transport company BY NAME, so the company
+                must already exist. Getting this order wrong is now a rejected row
+                rather than a silently unassigned driver, but saying so up front
+                saves the round trip. */}
+            <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900 space-y-1">
+              <p className="font-semibold">Before you upload</p>
+              <ul className="list-disc pl-4 space-y-0.5">
+                <li>
+                  Import <span className="font-semibold">transport companies first</span> — drivers
+                  reference them by name and rows naming an unknown company are rejected.
+                </li>
+                <li>
+                  Wrap any value containing a comma in double quotes, e.g.{' '}
+                  <code>&quot;123 Main Street, Kochi&quot;</code>.
+                </li>
+                <li>Phone numbers must be 10-digit Indian mobile numbers.</li>
+                <li>Country, state, city and pincode must match existing master data exactly.</li>
+              </ul>
+            </div>
+
             <div className="space-y-2">
               <Label htmlFor="csv-file">Select CSV File</Label>
               <Input

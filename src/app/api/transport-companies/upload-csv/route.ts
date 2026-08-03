@@ -2,6 +2,9 @@ import { NextRequest, NextResponse } from 'next/server'
 import { supabase } from '@/lib/supabase'
 import { createSupabaseAuthUser } from '@/lib/clerk-user-creation'
 import { requireAdmin } from '@/lib/auth/requireAdmin'
+import { parseCsv, missingHeaders } from '@/lib/csv/parseCsv'
+import { resolveLocationIds } from '@/lib/csv/lookups'
+import { EMAIL_REGEX, PHONE_REGEX } from '@/lib/validation/driverApplication'
 
 interface CSVTransportCompany {
   company_name: string
@@ -62,94 +65,10 @@ function parseDate(dateStr?: string): string | null {
   return null
 }
 
-// Parse CSV string to array of objects
-function parseCSV(csvText: string): CSVTransportCompany[] {
-  const lines = csvText.trim().split('\n')
-  if (lines.length < 2) return []
-
-  const headers = lines[0].split(',').map(h => h.trim().toLowerCase().replace(/\s+/g, '_'))
-  const records: CSVTransportCompany[] = []
-
-  for (let i = 1; i < lines.length; i++) {
-    const values = parseCSVLine(lines[i])
-    if (values.length === 0) continue
-
-    const record: Record<string, string> = {}
-    headers.forEach((header, index) => {
-      record[header] = values[index]?.trim() || ''
-    })
-    records.push(record as unknown as CSVTransportCompany)
-  }
-
-  return records
-}
-
-// Parse a single CSV line handling quoted values
-function parseCSVLine(line: string): string[] {
-  const result: string[] = []
-  let current = ''
-  let inQuotes = false
-
-  for (let i = 0; i < line.length; i++) {
-    const char = line[i]
-    if (char === '"') {
-      inQuotes = !inQuotes
-    } else if (char === ',' && !inQuotes) {
-      result.push(current.trim())
-      current = ''
-    } else {
-      current += char
-    }
-  }
-  result.push(current.trim())
-  return result
-}
-
-// Lookup location IDs by name
-async function lookupLocationIds(record: CSVTransportCompany) {
-  let country_id = null, state_id = null, city_id = null, pincode_id = null
-
-  if (record.country_name) {
-    const { data: country } = await supabase
-      .from('countries')
-      .select('id')
-      .ilike('name', record.country_name.trim())
-      .single()
-    country_id = country?.id || null
-  }
-
-  if (country_id && record.state_name) {
-    const { data: state } = await supabase
-      .from('states')
-      .select('id')
-      .eq('country_id', country_id)
-      .ilike('name', record.state_name.trim())
-      .single()
-    state_id = state?.id || null
-  }
-
-  if (state_id && record.city_name) {
-    const { data: city } = await supabase
-      .from('cities')
-      .select('id')
-      .eq('state_id', state_id)
-      .ilike('name', record.city_name.trim())
-      .single()
-    city_id = city?.id || null
-  }
-
-  if (city_id && record.pincode) {
-    const { data: pincode } = await supabase
-      .from('pincodes')
-      .select('id')
-      .eq('city_id', city_id)
-      .ilike('code', record.pincode.trim())
-      .single()
-    pincode_id = pincode?.id || null
-  }
-
-  return { country_id, state_id, city_id, pincode_id }
-}
+// Columns the importer cannot work without. Checked against the header row once,
+// up front, so a stale template fails with one clear message instead of one
+// "missing required fields" per data row.
+const REQUIRED_HEADERS = ['company_name', 'email', 'full_name']
 
 export async function POST(request: NextRequest) {
   try {
@@ -165,41 +84,118 @@ export async function POST(request: NextRequest) {
     }
 
     const csvText = await file.text()
-    const records = parseCSV(csvText)
+    const parsed = parseCsv(csvText)
 
-    if (records.length === 0) {
-      return NextResponse.json({ error: 'No valid records found in CSV' }, { status: 400 })
+    const absent = missingHeaders(parsed.headers, REQUIRED_HEADERS)
+    if (absent.length > 0) {
+      return NextResponse.json(
+        {
+          error:
+            `The file is missing required column(s): ${absent.join(', ')}. ` +
+            'Download the template to get the expected columns.',
+        },
+        { status: 400 }
+      )
+    }
+
+    if (parsed.rows.length === 0) {
+      return NextResponse.json(
+        { error: parsed.errors[0] ?? 'No valid records found in CSV', errors: parsed.errors },
+        { status: 400 }
+      )
     }
 
     const results = {
       success: 0,
-      failed: 0,
-      errors: [] as string[],
+      // Seeded with the malformed rows, which never reach the loop below — a file
+      // where half the rows had a stray comma otherwise reports "0 failed".
+      failed: parsed.errors.length,
+      errors: [...parsed.errors],
       usersCreated: 0,
       createdUsers: [] as any[]
     }
 
-    for (const record of records) {
+    // The existing-user check reads the database, which does not yet know about a
+    // row created moments ago in this same upload.
+    const seenEmails = new Set<string>()
+
+    for (const { line, values } of parsed.rows) {
+      const record = values as unknown as CSVTransportCompany
       try {
         // Validate required fields
         if (!record.company_name || !record.email || !record.full_name) {
-          results.errors.push(`Row missing required fields: ${record.company_name || record.email || 'Unknown'}`)
+          results.errors.push(
+            `Row ${line}: company_name, email and full_name are all required.`
+          )
           results.failed++
           continue
         }
 
-        // Check if email already exists in database
+        const email = record.email.trim().toLowerCase()
+        if (!EMAIL_REGEX.test(email)) {
+          results.errors.push(`Row ${line}: "${record.email}" is not a valid email address.`)
+          results.failed++
+          continue
+        }
+
+        const phone = record.phone?.trim()
+        if (phone && !PHONE_REGEX.test(phone)) {
+          results.errors.push(
+            `Row ${line}: "${phone}" is not a valid 10-digit Indian mobile number ` +
+              '(no country code, no leading zero).'
+          )
+          results.failed++
+          continue
+        }
+
+        // A licence date that could not be parsed used to be written as NULL with
+        // only a server-side console.warn — the operator saw a successful import
+        // and a company with no licence expiry.
+        const rawLicenceDate = record.license_valid_till?.trim()
+        const licenceValidTill = parseDate(rawLicenceDate)
+        if (rawLicenceDate && !licenceValidTill) {
+          results.errors.push(
+            `Row ${line}: license_valid_till "${rawLicenceDate}" is not a recognised date. ` +
+              'Use DD-MM-YYYY, DD/MM/YYYY or YYYY-MM-DD.'
+          )
+          results.failed++
+          continue
+        }
+
+        if (seenEmails.has(email)) {
+          results.errors.push(`Row ${line}: ${email} appears more than once in this file.`)
+          results.failed++
+          continue
+        }
+
+        // Check if email already exists in database. maybeSingle, not single —
+        // single() treats "no rows" as an error, so the previous code was relying
+        // on an error path to mean "available".
         const { data: existingUser } = await supabase
           .from('users')
           .select('id')
-          .eq('email', record.email.trim())
-          .single()
+          .eq('email', email)
+          .maybeSingle()
 
         if (existingUser) {
-          results.errors.push(`Email already exists: ${record.email}`)
+          results.errors.push(`Row ${line}: email already exists: ${email}`)
           results.failed++
           continue
         }
+
+        // Resolve locations BEFORE creating the login, so a bad cell does not
+        // leave an orphan auth user behind for someone to clean up by hand.
+        const { ids: locationIds, errors: locationErrors } = await resolveLocationIds(
+          supabase,
+          record
+        )
+        if (locationErrors.length > 0) {
+          results.errors.push(`Row ${line}: ${locationErrors.join(' ')}`)
+          results.failed++
+          continue
+        }
+
+        seenEmails.add(email)
 
         // Create the Supabase auth login. The handle_new_auth_user() trigger
         // provisions the public.users row (role via app_metadata); do NOT insert a
@@ -212,7 +208,7 @@ export async function POST(request: NextRequest) {
         )
 
         if (!userCreationResult.success || !userCreationResult.appUserId) {
-          results.errors.push(`Failed to create user ${record.email}: ${userCreationResult.error}`)
+          results.errors.push(`Row ${line}: failed to create user ${email}: ${userCreationResult.error}`)
           results.failed++
           continue
         }
@@ -224,9 +220,6 @@ export async function POST(request: NextRequest) {
           .update({ full_name: record.full_name.trim(), phone: record.phone || null })
           .eq('id', appUserId)
 
-        // Get location IDs
-        const locationIds = await lookupLocationIds(record)
-
         // Create transport company record
         const { error: companyError } = await supabase
           .from('transport_companies')
@@ -235,13 +228,13 @@ export async function POST(request: NextRequest) {
             company_name: record.company_name.trim(),
             address_line: record.address_line || null,
             registration_number: record.registration_number || null,
-            license_valid_till: parseDate(record.license_valid_till),
+            license_valid_till: licenceValidTill,
             is_verified: record.is_verified?.toLowerCase() === 'true',
             ...locationIds
           })
 
         if (companyError) {
-          results.errors.push(`Failed to create transport company record for ${record.email}: ${companyError.message}`)
+          results.errors.push(`Row ${line}: failed to create transport company record for ${email}: ${companyError.message}`)
           results.failed++
         } else {
           results.success++
@@ -254,13 +247,16 @@ export async function POST(request: NextRequest) {
           })
         }
       } catch (err) {
-        results.errors.push(`Error processing ${record.company_name}: ${err instanceof Error ? err.message : 'Unknown error'}`)
+        results.errors.push(`Row ${line}: ${err instanceof Error ? err.message : 'Unknown error'}`)
         results.failed++
       }
     }
 
     return NextResponse.json({
-      message: `Created ${results.usersCreated} transport companies successfully. ${results.failed} failed. Users can login by resetting their password.`,
+      message:
+        results.failed > 0
+          ? `Created ${results.usersCreated} transport companies. ${results.failed} row(s) were rejected and imported nothing — see the errors below. Imported users can log in by resetting their password.`
+          : `Created ${results.usersCreated} transport companies successfully. Users can log in by resetting their password.`,
       ...results
     })
   } catch (error) {

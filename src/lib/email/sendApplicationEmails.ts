@@ -10,7 +10,23 @@
 // so the default sends from .com; override via EMAIL_FROM only with another verified domain.
 const FROM = process.env.EMAIL_FROM || 'QSoS <noreply@triqare.com>'
 const SUPPORT = 'support@triqare.com'
-const APP_URL = process.env.NEXT_PUBLIC_APP_URL || 'https://triqare.in'
+// The host that is actually serving this app today.
+//
+// This used to fall back to triqare.in — a different site — so every link built
+// from APP_URL pointed somewhere that was not this app. The obvious replacement
+// was triqare.com (what .env.netlify carries), but as of the last check that
+// domain still resolves to a parked IP and does not respond at all, so it would
+// trade one dead link for another.
+//
+// AT CUTOVER: change this to https://triqare.com, and make sure
+// NEXT_PUBLIC_APP_URL in the Netlify UI matches — the env var wins over this
+// fallback, so a stale value there breaks these links regardless of what is here.
+const APP_URL = process.env.NEXT_PUBLIC_APP_URL || 'https://staging.triqare.com'
+
+// One link for every recipient: /get-app opens QSoS when it is installed and falls
+// back to the right store when it is not. Email cannot detect the device, so the
+// decision has to happen on a page we control rather than in the message.
+const GET_APP_URL = `${APP_URL}/get-app`
 
 /** Escape user-provided values before interpolating into email HTML (anti-injection). */
 function esc(value: string): string {
@@ -176,7 +192,7 @@ export async function sendEmergencyContactInviteEmail(args: {
 ${inviter} has added you as an emergency contact on TriQare QSoS, our emergency-response app.
 
 You can create your own free account so you can be reached and use the app yourself:
-  1. Download the TriQare QSoS app.
+  1. Get the TriQare QSoS app: ${GET_APP_URL}
   2. Sign up / log in using THIS email address (${email}).
 
 Once you're in, you have access to every feature of the app. Note: the Emergency (SOS) button works only while you are physically within India.
@@ -194,7 +210,7 @@ Questions? Contact ${SUPPORT}.
       </ol>
       <p>Once you're in, you have access to every feature of the app. The Emergency (SOS) button works only while you are physically within India.</p>
       <p style="text-align:center;margin:20px 0">
-        <a href="${APP_URL}" style="background:#cc3333;color:#fff;padding:10px 18px;border-radius:6px;text-decoration:none">Get the app</a>
+        <a href="${GET_APP_URL}" style="background:#cc3333;color:#fff;padding:10px 18px;border-radius:6px;text-decoration:none;display:inline-block">Get the app</a>
       </p>
       <p>Questions? Contact <a href="mailto:${SUPPORT}" style="color:#cc3333">${SUPPORT}</a>.</p>
       <p>— TriQare Team</p>`),
