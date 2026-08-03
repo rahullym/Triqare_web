@@ -14,6 +14,10 @@ const PUBLIC_PREFIXES = [
   // keys off the caller-supplied ids), so it must be reachable pre-auth.
   '/api/register',
   '/setup',
+  // "Get the app" landing page. Reached from an invite EMAIL, so the visitor has
+  // no session and by definition does not have the app yet — bouncing them to
+  // /sign-in is the one outcome that makes the link useless.
+  '/get-app',
   '/mobile-app-required',
   '/test-mobile-redirect',
   '/api/webhooks',
