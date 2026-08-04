@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { TransportCompanyService } from '@/services/transportCompanyService'
 import { requireAdmin } from '@/lib/auth/requireAdmin'
 import { requireRole, STAFF_ROLES } from '@/lib/auth/requireRole'
+import { blankToNull, LOCATION_FK_FIELDS } from '@/lib/blankToNull'
 
 export async function GET(request: NextRequest) {
   const gate = await requireRole(STAFF_ROLES)
@@ -42,7 +43,10 @@ export async function POST(request: NextRequest) {
   const gate = await requireAdmin()
   if (gate.error) return gate.error
   try {
-    const body = await request.json()
+    // The add form holds untouched optional fields as '' and posts them verbatim.
+    // Postgres rejects '' for a uuid column (22P02), so leaving the optional
+    // location fields blank — which the form invites — failed the whole insert.
+    const body = blankToNull(await request.json(), [...LOCATION_FK_FIELDS, 'license_valid_till'])
 
     // Validate required fields
     if (!body.user_id || !body.company_name) {

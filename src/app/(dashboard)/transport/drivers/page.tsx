@@ -270,7 +270,7 @@ export default function TransportDriversPage() {
       if (response.ok) {
         setCsvResult({ success: result.success, failed: result.failed, errors: result.errors || [] })
         if (result.success > 0) {
-          toast.success(`Successfully sent ${result.success} driver invitations`)
+          toast.success(`Successfully added ${result.success} drivers`)
           fetchDrivers()
         }
         if (result.failed > 0) {
@@ -779,7 +779,7 @@ export default function TransportDriversPage() {
                   <div className="flex items-center gap-4">
                     <div className="flex items-center gap-1 text-green-600">
                       <CheckCircle className="h-4 w-4" />
-                      <span className="text-sm font-medium">{csvResult.success} invitations sent</span>
+                      <span className="text-sm font-medium">{csvResult.success} drivers added</span>
                     </div>
                     {csvResult.failed > 0 && (
                       <div className="flex items-center gap-1 text-red-600">

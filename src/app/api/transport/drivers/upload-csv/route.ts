@@ -1,10 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { supabase } from '@/lib/supabase'
-import { sendUserInvitation } from '@/lib/invitations'
-import { getAuthedUser } from '@/lib/supabase/server'
+import { createClient, getAuthedUser } from '@/lib/supabase/server'
+import { createSupabaseAuthUser } from '@/lib/clerk-user-creation'
 import { parseCsv, missingHeaders } from '@/lib/csv/parseCsv'
 import { resolveLocationIds } from '@/lib/csv/lookups'
+import { rollbackProvisionedUser } from '@/lib/provisionRollback'
 import { EMAIL_REGEX, PHONE_REGEX } from '@/lib/validation/driverApplication'
+
+// Service-role client: provisioning logins is a privileged write, and the anon
+// client this route used before only worked while RLS stayed permissive.
+const supabase = createClient()
 
 interface CSVDriver {
   full_name: string
@@ -92,12 +96,12 @@ export async function POST(request: NextRequest) {
       // Seeded with the malformed rows, which never reach the loop below.
       failed: parsed.errors.length,
       errors: [...parsed.errors],
-      invitationsSent: 0,
-      pendingData: [] as any[]
+      usersCreated: 0,
+      createdDrivers: [] as any[]
     }
 
-    // The database check below cannot see an invitation sent moments ago in this
-    // same upload, so a duplicated row would send two invitations to one address.
+    // The database check below cannot see a login created moments ago in this same
+    // upload, so a duplicated row would otherwise fail confusingly on the second.
     const seenEmails = new Set<string>()
 
     for (const { line, values } of parsed.rows) {
@@ -162,9 +166,8 @@ export async function POST(request: NextRequest) {
           continue
         }
 
-        // Resolve locations BEFORE sending the invitation. Doing it after meant a
-        // bad location cell still emailed the driver, and the invite could not be
-        // unsent.
+        // Resolve locations BEFORE creating the login, so a bad cell does not leave
+        // an orphan account behind for someone to clean up by hand.
         const { ids: locationIds, errors: locationErrors } = await resolveLocationIds(
           supabase,
           record
@@ -177,54 +180,72 @@ export async function POST(request: NextRequest) {
 
         seenEmails.add(email)
 
-        // Send Clerk invitation
-        const invitationResult = await sendUserInvitation(
+        // Provision the driver outright.
+        //
+        // WHAT THIS REPLACES. This route used to email an invitation and stash the
+        // driver's details in `pending_csv_imports`, to be materialised when the
+        // invitation was accepted. Nothing ever read that table — no signup hook, no
+        // job, nothing — so the drivers were never created, while the upload
+        // reported "Sent N invitations successfully". It now creates the account and
+        // the driver record the same way the admin importer does; the driver signs in
+        // via "Forgot password", exactly like an admin-imported one.
+        const userCreationResult = await createSupabaseAuthUser(
           record.email.trim(),
+          record.full_name.trim(),
           'driver',
-          currentUser.id
+          record.phone
         )
 
-        if (!invitationResult.success) {
-          results.errors.push(`Row ${line}: failed to send invitation to ${email}: ${invitationResult.error}`)
+        if (!userCreationResult.success || !userCreationResult.appUserId) {
+          results.errors.push(`Row ${line}: failed to create user ${email}: ${userCreationResult.error}`)
           results.failed++
           continue
         }
+        const appUserId = userCreationResult.appUserId
 
-        const pendingDriverData = {
-          invitationId: invitationResult.invitationId,
-          email: record.email.trim(),
-          full_name: record.full_name.trim(),
-          phone: record.phone || null,
-          license_number: record.license_number.trim(),
-          aadhar_number: record.aadhar_number || null,
-          is_verified: false, // Always false for new drivers
-          status,
-          transport_company_id: transportCompany.user_id, // Automatically set to logged-in transport company
-          latitude: record.latitude ? parseFloat(record.latitude) : null,
-          longitude: record.longitude ? parseFloat(record.longitude) : null,
-          address_line: record.address_line || null,
-          ...locationIds
-        }
+        await supabase
+          .from('users')
+          .update({ full_name: record.full_name.trim(), phone: record.phone || null })
+          .eq('id', appUserId)
 
-        // Store in pending_csv_imports table
-        const { error: pendingError } = await supabase
-          .from('pending_csv_imports')
-          .insert({
-            invitation_id: invitationResult.invitationId,
-            email: record.email.trim(),
-            role: 'driver',
-            import_type: 'driver',
-            data: pendingDriverData,
-            imported_by: currentUser.id
+        const { error: driverError } = await supabase
+          .from('drivers')
+          .upsert({
+            user_id: appUserId,
+            license_number: record.license_number.trim(),
+            aadhar_number: record.aadhar_number || null,
+            is_verified: false, // Always false for new drivers
+            status,
+            transport_company_id: transportCompany.user_id, // the logged-in company
+            latitude: record.latitude ? parseFloat(record.latitude) : null,
+            longitude: record.longitude ? parseFloat(record.longitude) : null,
+            address_line: record.address_line || null,
+            last_updated_at: new Date().toISOString(),
+            ...locationIds
+          }, { onConflict: 'user_id' })
+
+        if (driverError) {
+          // Undo the login this row just created — an orphan account would be
+          // rejected as "email already exists" when the company re-uploads the
+          // corrected row. See rollbackProvisionedUser.
+          const { warning } = await rollbackProvisionedUser({
+            authUserId: userCreationResult.authUserId,
+            appUserId,
           })
-
-        if (pendingError) {
-          results.errors.push(`Row ${line}: failed to store pending data for ${email}: ${pendingError.message}`)
+          seenEmails.delete(email)
+          results.errors.push(
+            `Row ${line}: failed to create driver record for ${email}: ${driverError.message}` +
+              (warning ? ` ${warning}` : ' The part-created login was removed, so you can fix this row and upload it again.')
+          )
           results.failed++
         } else {
           results.success++
-          results.invitationsSent++
-          results.pendingData.push(pendingDriverData)
+          results.usersCreated++
+          results.createdDrivers.push({
+            email: record.email,
+            full_name: record.full_name,
+            license_number: record.license_number,
+          })
         }
       } catch (err) {
         results.errors.push(`Row ${line}: ${err instanceof Error ? err.message : 'Unknown error'}`)
@@ -235,8 +256,8 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({
       message:
         results.failed > 0
-          ? `Sent ${results.invitationsSent} invitations. ${results.failed} row(s) were rejected and sent nothing — see the errors below. Drivers will be added to ${transportCompany.company_name} when they accept.`
-          : `Sent ${results.invitationsSent} invitations successfully. Drivers will be added to ${transportCompany.company_name} when they accept invitations.`,
+          ? `Added ${results.usersCreated} drivers to ${transportCompany.company_name}. ${results.failed} row(s) were rejected and imported nothing — see the errors below. Imported drivers sign in by resetting their password.`
+          : `Added ${results.usersCreated} drivers to ${transportCompany.company_name} successfully. They sign in by resetting their password.`,
       ...results
     })
   } catch (error) {

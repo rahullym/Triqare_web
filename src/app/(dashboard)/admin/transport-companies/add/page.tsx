@@ -21,7 +21,7 @@ import {
   AlertCircle
 } from 'lucide-react'
 import Link from 'next/link'
-import { useCreateTransportCompany } from '@/hooks/useTransportCompanies'
+import { useCreateTransportCompany, useTransportCompanies } from '@/hooks/useTransportCompanies'
 import { useCountries, useStates, useCities, usePincodes } from '@/hooks/useLocations'
 import { useUsersByRole } from '@/hooks/useUsers'
 
@@ -37,9 +37,24 @@ interface FormData {
   pincode_id: string
 }
 
+/**
+ * Two ways to supply the login a company signs in with:
+ *  - 'new'      creates it here, in one step (the common case when onboarding a
+ *               company that has never touched the system);
+ *  - 'existing' attaches the company to an account that already exists.
+ *
+ * Only the second used to be possible, so adding a real company meant first
+ * inventing a password for them under Users → Add User and then coming back.
+ */
+type UserMode = 'new' | 'existing'
+
 export default function AddTransportCompanyPage() {
   const router = useRouter()
   const [success, setSuccess] = useState(false)
+  const [userMode, setUserMode] = useState<UserMode>('new')
+  const [submitting, setSubmitting] = useState(false)
+  const [provisionError, setProvisionError] = useState<string | null>(null)
+  const [newUser, setNewUser] = useState({ full_name: '', email: '', phone: '' })
   const [formData, setFormData] = useState<FormData>({
     user_id: '',
     company_name: '',
@@ -61,30 +76,70 @@ export default function AddTransportCompanyPage() {
 
   // Users hook for transport company role
   const { users: transportCompanyUsers, loading: usersLoading } = useUsersByRole('transport_company')
+  // transport_companies is keyed by user_id, so an account that already has a
+  // company cannot take a second one — offering it only produces a duplicate-key
+  // error after the form is filled in.
+  const { transportCompanies } = useTransportCompanies({ limit: 1000 })
+  const takenUserIds = new Set(transportCompanies.map(c => c.user_id))
+  const availableUsers = transportCompanyUsers.filter(u => !takenUserIds.has(u.id))
 
   const handleInputChange = (field: keyof FormData, value: string) => {
     setFormData(prev => ({ ...prev, [field]: value }))
   }
 
+  const busy = loading || submitting
+  const shownError = provisionError ?? error
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
+    setProvisionError(null)
 
-    // Validate required fields
-    if (!formData.user_id || !formData.company_name) {
-      toast.error('Please fill in all required fields')
+    if (!formData.company_name) {
+      toast.error('Company name is required')
       return
     }
 
-    try {
-      await createTransportCompany(formData)
-      setSuccess(true)
-      toast.success('Transport company created successfully!')
+    if (userMode === 'existing') {
+      if (!formData.user_id) {
+        toast.error('Select the user this company signs in as')
+        return
+      }
+      try {
+        await createTransportCompany(formData)
+        setSuccess(true)
+        toast.success('Transport company created successfully!')
+        setTimeout(() => router.push('/admin/transport-companies'), 2000)
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : 'Failed to create transport company')
+      }
+      return
+    }
 
-      setTimeout(() => {
-        router.push('/admin/transport-companies')
-      }, 2000)
+    if (!newUser.full_name || !newUser.email) {
+      toast.error('Contact name and email are required')
+      return
+    }
+
+    setSubmitting(true)
+    try {
+      const response = await fetch('/api/admin/transport-companies/provision', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...formData, ...newUser }),
+      })
+      const result = await response.json()
+      if (!response.ok || !result.success) {
+        throw new Error(result.error || 'Failed to create transport company')
+      }
+      setSuccess(true)
+      toast.success(result.message || 'Transport company created successfully!')
+      setTimeout(() => router.push('/admin/transport-companies'), 2000)
     } catch (err) {
-      toast.error('Failed to create transport company')
+      const message = err instanceof Error ? err.message : 'Failed to create transport company'
+      setProvisionError(message)
+      toast.error(message)
+    } finally {
+      setSubmitting(false)
     }
   }
 
@@ -120,12 +175,12 @@ export default function AddTransportCompanyPage() {
         )}
 
         {/* Error Message */}
-        {error && (
+        {shownError && (
           <Card className="border-red-200 bg-red-50">
             <CardContent className="pt-6">
               <div className="flex items-center text-red-800">
                 <AlertCircle className="h-5 w-5 mr-2" />
-                <span>{error}</span>
+                <span>{shownError}</span>
               </div>
             </CardContent>
           </Card>
@@ -136,39 +191,96 @@ export default function AddTransportCompanyPage() {
           <CardHeader>
             <CardTitle className="flex items-center">
               <User className="h-5 w-5 mr-2" />
-              User Assignment
+              Company Login
             </CardTitle>
-            <CardDescription>Select the user who will manage this transport company</CardDescription>
+            <CardDescription>The account this transport company will sign in with</CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
-            <div>
-              <Label htmlFor="user_id">User *</Label>
-              <Combobox
-                options={transportCompanyUsers.map(user => ({
-                  value: user.id,
-                  label: `${user.full_name} (${user.email})`
-                }))}
-                value={formData.user_id}
-                onValueChange={(value) => handleInputChange('user_id', value)}
-                placeholder={usersLoading ? "Loading users..." : "Select a user"}
-                searchPlaceholder="Search users..."
-                emptyText="No users found"
-                disabled={usersLoading}
-                className="w-full"
-              />
-              {usersLoading && (
-                <p className="text-sm text-gray-500 mt-1">
-                  <Loader2 className="h-4 w-4 animate-spin inline mr-1" />
-                  Loading transport company users...
-                </p>
-              )}
-              {!usersLoading && transportCompanyUsers.length === 0 && (
-                <p className="text-sm text-amber-600 mt-1">
-                  <AlertCircle className="h-4 w-4 inline mr-1" />
-                  No users with 'transport_company' role found. Please create users first.
-                </p>
-              )}
+            <div className="flex gap-4">
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  type="radio"
+                  name="user_mode"
+                  checked={userMode === 'new'}
+                  onChange={() => setUserMode('new')}
+                />
+                Create a new login
+              </label>
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  type="radio"
+                  name="user_mode"
+                  checked={userMode === 'existing'}
+                  onChange={() => setUserMode('existing')}
+                />
+                Use an existing user
+              </label>
             </div>
+
+            {userMode === 'new' ? (
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div>
+                  <Label htmlFor="contact_name">Contact Person *</Label>
+                  <Input
+                    id="contact_name"
+                    value={newUser.full_name}
+                    onChange={(e) => setNewUser(prev => ({ ...prev, full_name: e.target.value }))}
+                    placeholder="Full name"
+                  />
+                </div>
+                <div>
+                  <Label htmlFor="contact_email">Email *</Label>
+                  <Input
+                    id="contact_email"
+                    type="email"
+                    value={newUser.email}
+                    onChange={(e) => setNewUser(prev => ({ ...prev, email: e.target.value }))}
+                    placeholder="company@example.com"
+                  />
+                </div>
+                <div>
+                  <Label htmlFor="contact_phone">Phone</Label>
+                  <Input
+                    id="contact_phone"
+                    value={newUser.phone}
+                    onChange={(e) => setNewUser(prev => ({ ...prev, phone: e.target.value }))}
+                    placeholder="10-digit mobile"
+                  />
+                </div>
+                <p className="text-sm text-gray-500 md:col-span-3">
+                  They sign in by choosing &quot;Forgot password&quot; on the login page to set their own password.
+                </p>
+              </div>
+            ) : (
+              <div>
+                <Label htmlFor="user_id">User *</Label>
+                <Combobox
+                  options={availableUsers.map(user => ({
+                    value: user.id,
+                    label: `${user.full_name} (${user.email})`
+                  }))}
+                  value={formData.user_id}
+                  onValueChange={(value) => handleInputChange('user_id', value)}
+                  placeholder={usersLoading ? "Loading users..." : "Select a user"}
+                  searchPlaceholder="Search users..."
+                  emptyText="No users found"
+                  disabled={usersLoading}
+                  className="w-full"
+                />
+                {usersLoading && (
+                  <p className="text-sm text-gray-500 mt-1">
+                    <Loader2 className="h-4 w-4 animate-spin inline mr-1" />
+                    Loading transport company users...
+                  </p>
+                )}
+                {!usersLoading && availableUsers.length === 0 && (
+                  <p className="text-sm text-amber-600 mt-1">
+                    <AlertCircle className="h-4 w-4 inline mr-1" />
+                    No unassigned transport-company accounts. Use &quot;Create a new login&quot; above.
+                  </p>
+                )}
+              </div>
+            )}
           </CardContent>
         </Card>
 
@@ -314,12 +426,12 @@ export default function AddTransportCompanyPage() {
         {/* Form Actions */}
         <div className="flex items-center justify-end space-x-4">
           <Link href="/admin/transport-companies">
-            <Button type="button" variant="outline" disabled={loading}>
+            <Button type="button" variant="outline" disabled={busy}>
               Cancel
             </Button>
           </Link>
-          <Button type="submit" disabled={loading || success}>
-            {loading ? (
+          <Button type="submit" disabled={busy || success}>
+            {busy ? (
               <>
                 <Loader2 className="h-4 w-4 mr-2 animate-spin" />
                 Creating...

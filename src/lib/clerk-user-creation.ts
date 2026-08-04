@@ -41,7 +41,36 @@ export async function createSupabaseAuthUser(
 
     // The trigger created/linked the public.users row; resolve its internal id.
     const { data: appUser } = await UserService.getUserByAuthId(data.user.id)
-    return { success: true, authUserId: data.user.id, appUserId: appUser?.id }
+    if (!appUser?.id) {
+      return { success: false, authUserId: data.user.id, error: 'Auth user created but no users row was provisioned' }
+    }
+
+    // Force the role onto the provisioned row.
+    //
+    // handle_new_auth_user() reads `NEW.raw_app_meta_data->>'role'`, but GoTrue
+    // INSERTs the auth.users row with only its own provider metadata and applies
+    // the caller's app_metadata in a SECOND statement — so at trigger time the
+    // role key is absent and the function falls back to its 'patient' default.
+    // Every admin-provisioned driver and transport company therefore landed as a
+    // patient: profile row present, but wrong role, so they could not sign in as
+    // a driver and never appeared in the driver lists.
+    //
+    // The trigger also links an existing users row by email rather than creating
+    // one, in which case it does not touch the role at all. Setting it here covers
+    // both branches and keeps the fix in one place for every caller.
+    if (appUser.role !== role) {
+      const { error: roleError } = await admin.from('users').update({ role }).eq('id', appUser.id)
+      if (roleError) {
+        return {
+          success: false,
+          authUserId: data.user.id,
+          appUserId: appUser.id,
+          error: `User created but the ${role} role could not be applied: ${roleError.message}`,
+        }
+      }
+    }
+
+    return { success: true, authUserId: data.user.id, appUserId: appUser.id }
   } catch (error: any) {
     console.error(`Error creating Supabase auth user ${email}:`, error)
     return { success: false, error: error?.message || 'Failed to create user' }

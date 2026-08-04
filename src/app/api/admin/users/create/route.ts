@@ -63,6 +63,21 @@ export async function POST(request: NextRequest) {
     // Resolve the provisioned public.users row.
     const { data: dbUser } = await UserService.getUserByAuthId(created.user.id)
 
+    // Force the role on. handle_new_auth_user() reads raw_app_meta_data at INSERT
+    // time, but GoTrue applies the caller's app_metadata in a second statement, so
+    // the trigger falls back to its 'patient' default — an admin picking "driver"
+    // here got a patient. (Same fix as createSupabaseAuthUser; this route creates
+    // the auth user directly rather than going through that helper.)
+    if (dbUser?.id && dbUser.role !== role) {
+      const { error: roleError } = await admin.from('users').update({ role }).eq('id', dbUser.id)
+      if (roleError) {
+        return NextResponse.json(
+          { error: `User created but the ${role} role could not be applied: ${roleError.message}` },
+          { status: 500 },
+        )
+      }
+    }
+
     return NextResponse.json({
       success: true,
       user: {

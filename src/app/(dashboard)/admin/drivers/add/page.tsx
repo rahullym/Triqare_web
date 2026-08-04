@@ -23,7 +23,7 @@ import {
   Building2
 } from 'lucide-react'
 import Link from 'next/link'
-import { useCreateDriver } from '@/hooks/useDrivers'
+import { useCreateDriver, useDrivers } from '@/hooks/useDrivers'
 import { useTransportCompanies } from '@/hooks/useTransportCompanies'
 import { useCountries, useStates, useCities, usePincodes } from '@/hooks/useLocations'
 import { useUsersByRole } from '@/hooks/useUsers'
@@ -42,9 +42,22 @@ interface FormData {
   address_line: string
 }
 
+/**
+ * Two ways to supply the login a driver signs in with — see the transport-company
+ * add page for the same pattern. Only 'existing' used to be possible, so a driver
+ * who had never touched the system could not be added here at all: you had to
+ * create their account under Users → Add User (inventing a password for them)
+ * and then come back.
+ */
+type UserMode = 'new' | 'existing'
+
 export default function AddDriverPage() {
   const router = useRouter()
   const [success, setSuccess] = useState(false)
+  const [userMode, setUserMode] = useState<UserMode>('new')
+  const [submitting, setSubmitting] = useState(false)
+  const [provisionError, setProvisionError] = useState<string | null>(null)
+  const [newUser, setNewUser] = useState({ full_name: '', email: '', phone: '' })
   const [formData, setFormData] = useState<FormData>({
     user_id: '',
     transport_company_id: '',
@@ -69,17 +82,75 @@ export default function AddDriverPage() {
   
   // Users hook for driver role
   const { users: driverUsers, loading: usersLoading } = useUsersByRole('driver')
+  // drivers is keyed by user_id, so an account that already has a driver profile
+  // cannot take a second one — offering it only produces a duplicate-key error
+  // once the form has been filled in.
+  const { drivers: existingDrivers } = useDrivers({ limit: 1000 })
+  const takenUserIds = new Set(existingDrivers.map(d => d.user_id))
+  const availableUsers = driverUsers.filter(u => !takenUserIds.has(u.id))
 
   const handleInputChange = (field: keyof FormData, value: string | boolean) => {
     setFormData(prev => ({ ...prev, [field]: value }))
   }
 
+  const busy = loading || submitting
+  const shownError = provisionError ?? error
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
+    setProvisionError(null)
 
-    // Validate required fields
-    if (!formData.user_id || !formData.transport_company_id || !formData.license_number) {
-      toast.error('Please fill in all required fields')
+    // transport_company_id is NOT NULL on the drivers table — a driver with no
+    // company cannot be stored at all.
+    if (!formData.transport_company_id || !formData.license_number) {
+      toast.error('Transport company and licence number are required')
+      return
+    }
+
+    if (userMode === 'new') {
+      if (!newUser.full_name || !newUser.email) {
+        toast.error('Driver name and email are required')
+        return
+      }
+
+      setSubmitting(true)
+      try {
+        const response = await fetch('/api/admin/drivers/provision', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            ...newUser,
+            transport_company_id: formData.transport_company_id,
+            license_number: formData.license_number,
+            aadhar_number: formData.aadhar_number,
+            is_verified: formData.is_verified,
+            status: formData.status,
+            country_id: formData.country_id,
+            state_id: formData.state_id,
+            city_id: formData.city_id,
+            pincode_id: formData.pincode_id,
+            address_line: formData.address_line,
+          }),
+        })
+        const result = await response.json()
+        if (!response.ok || !result.success) {
+          throw new Error(result.error || 'Failed to create driver')
+        }
+        setSuccess(true)
+        toast.success(result.message || 'Driver created successfully!')
+        setTimeout(() => router.push('/admin/drivers'), 2000)
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Failed to create driver'
+        setProvisionError(message)
+        toast.error(message)
+      } finally {
+        setSubmitting(false)
+      }
+      return
+    }
+
+    if (!formData.user_id) {
+      toast.error('Select the user this driver signs in as')
       return
     }
 
@@ -107,7 +178,7 @@ export default function AddDriverPage() {
       }
     } catch (err) {
       console.error('Error creating driver:', err)
-      toast.error('Failed to create driver')
+      toast.error(err instanceof Error ? err.message : 'Failed to create driver')
     }
   }
 
@@ -157,37 +228,94 @@ export default function AddDriverPage() {
               <User className="h-5 w-5 mr-2" />
               User Assignment
             </CardTitle>
-            <CardDescription>Select the user who will be assigned as this driver</CardDescription>
+            <CardDescription>The account this driver will sign in with</CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
-            <div>
-              <Label htmlFor="user_id">User *</Label>
-              <Combobox
-                options={driverUsers.map(user => ({
-                  value: user.id,
-                  label: `${user.full_name} (${user.email})`
-                }))}
-                value={formData.user_id}
-                onValueChange={(value) => handleInputChange('user_id', value)}
-                placeholder={usersLoading ? "Loading users..." : "Select a user"}
-                searchPlaceholder="Search users..."
-                emptyText="No users found"
-                disabled={usersLoading}
-                className="w-full"
-              />
-              {usersLoading && (
-                <p className="text-sm text-gray-500 mt-1">
-                  <Loader2 className="h-4 w-4 animate-spin inline mr-1" />
-                  Loading driver users...
-                </p>
-              )}
-              {!usersLoading && driverUsers.length === 0 && (
-                <p className="text-sm text-amber-600 mt-1">
-                  <AlertCircle className="h-4 w-4 inline mr-1" />
-                  No users with 'driver' role found. Please create users first.
-                </p>
-              )}
+            <div className="flex gap-4">
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  type="radio"
+                  name="user_mode"
+                  checked={userMode === 'new'}
+                  onChange={() => setUserMode('new')}
+                />
+                Create a new login
+              </label>
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  type="radio"
+                  name="user_mode"
+                  checked={userMode === 'existing'}
+                  onChange={() => setUserMode('existing')}
+                />
+                Use an existing user
+              </label>
             </div>
+
+            {userMode === 'new' ? (
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div>
+                  <Label htmlFor="driver_name">Full Name *</Label>
+                  <Input
+                    id="driver_name"
+                    value={newUser.full_name}
+                    onChange={(e) => setNewUser(prev => ({ ...prev, full_name: e.target.value }))}
+                    placeholder="Driver's full name"
+                  />
+                </div>
+                <div>
+                  <Label htmlFor="driver_email">Email *</Label>
+                  <Input
+                    id="driver_email"
+                    type="email"
+                    value={newUser.email}
+                    onChange={(e) => setNewUser(prev => ({ ...prev, email: e.target.value }))}
+                    placeholder="driver@example.com"
+                  />
+                </div>
+                <div>
+                  <Label htmlFor="driver_phone">Phone</Label>
+                  <Input
+                    id="driver_phone"
+                    value={newUser.phone}
+                    onChange={(e) => setNewUser(prev => ({ ...prev, phone: e.target.value }))}
+                    placeholder="10-digit mobile"
+                  />
+                </div>
+                <p className="text-sm text-gray-500 md:col-span-3">
+                  They sign in by choosing &quot;Forgot password&quot; on the login page to set their own password.
+                </p>
+              </div>
+            ) : (
+              <div>
+                <Label htmlFor="user_id">User *</Label>
+                <Combobox
+                  options={availableUsers.map(user => ({
+                    value: user.id,
+                    label: `${user.full_name} (${user.email})`
+                  }))}
+                  value={formData.user_id}
+                  onValueChange={(value) => handleInputChange('user_id', value)}
+                  placeholder={usersLoading ? "Loading users..." : "Select a user"}
+                  searchPlaceholder="Search users..."
+                  emptyText="No users found"
+                  disabled={usersLoading}
+                  className="w-full"
+                />
+                {usersLoading && (
+                  <p className="text-sm text-gray-500 mt-1">
+                    <Loader2 className="h-4 w-4 animate-spin inline mr-1" />
+                    Loading driver users...
+                  </p>
+                )}
+                {!usersLoading && availableUsers.length === 0 && (
+                  <p className="text-sm text-amber-600 mt-1">
+                    <AlertCircle className="h-4 w-4 inline mr-1" />
+                    No unassigned driver accounts. Use &quot;Create a new login&quot; above.
+                  </p>
+                )}
+              </div>
+            )}
           </CardContent>
         </Card>
 
@@ -378,8 +506,8 @@ export default function AddDriverPage() {
               Cancel
             </Button>
           </Link>
-          <Button type="submit" disabled={loading}>
-            {loading ? (
+          <Button type="submit" disabled={busy}>
+            {busy ? (
               <>
                 <Loader2 className="h-4 w-4 animate-spin mr-2" />
                 Creating Driver...
@@ -393,13 +521,13 @@ export default function AddDriverPage() {
           </Button>
         </div>
 
-        {error && (
+        {shownError && (
           <div className="bg-red-50 border border-red-200 rounded-md p-4">
             <div className="flex">
               <AlertCircle className="h-5 w-5 text-red-400" />
               <div className="ml-3">
                 <h3 className="text-sm font-medium text-red-800">Error creating driver</h3>
-                <p className="text-sm text-red-700 mt-1">{error}</p>
+                <p className="text-sm text-red-700 mt-1">{shownError}</p>
               </div>
             </div>
           </div>

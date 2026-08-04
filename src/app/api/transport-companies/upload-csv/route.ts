@@ -1,10 +1,17 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { supabase } from '@/lib/supabase'
+import { createClient } from '@/lib/supabase/server'
 import { createSupabaseAuthUser } from '@/lib/clerk-user-creation'
 import { requireAdmin } from '@/lib/auth/requireAdmin'
 import { parseCsv, missingHeaders } from '@/lib/csv/parseCsv'
 import { resolveLocationIds } from '@/lib/csv/lookups'
+import { rollbackProvisionedUser } from '@/lib/provisionRollback'
 import { EMAIL_REGEX, PHONE_REGEX } from '@/lib/validation/driverApplication'
+
+// Service-role client (bypasses RLS) for privileged CSV provisioning — the same
+// client the driver importer uses. This route previously wrote with the anon
+// client, so every insert here depended on RLS staying permissive for `anon`;
+// tightening those policies would have silently broken bulk import.
+const supabase = createClient()
 
 interface CSVTransportCompany {
   company_name: string
@@ -234,7 +241,18 @@ export async function POST(request: NextRequest) {
           })
 
         if (companyError) {
-          results.errors.push(`Row ${line}: failed to create transport company record for ${email}: ${companyError.message}`)
+          // Undo the login this row just created — an orphan account would be
+          // rejected as "email already exists" when the operator re-uploads the
+          // corrected row. See rollbackProvisionedUser.
+          const { warning } = await rollbackProvisionedUser({
+            authUserId: userCreationResult.authUserId,
+            appUserId,
+          })
+          seenEmails.delete(email)
+          results.errors.push(
+            `Row ${line}: failed to create transport company record for ${email}: ${companyError.message}` +
+              (warning ? ` ${warning}` : ' The part-created login was removed, so you can fix this row and upload it again.')
+          )
           results.failed++
         } else {
           results.success++

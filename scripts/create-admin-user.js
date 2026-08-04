@@ -71,5 +71,5 @@ async function findAuthId(email) {
     console.log('inserted new admin public.users row + linked')
   }
 
-  console.log(`\nDONE. Log in at https://staging.triqare.com/sign-in as ${EMAIL}`)
+  console.log(`\nDONE. Log in at https://triqare.com/sign-in as ${EMAIL}`)
 })().catch(e => { console.error('FATAL', e.message); process.exit(1) })

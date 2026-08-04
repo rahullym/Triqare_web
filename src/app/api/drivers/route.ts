@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { DriverService } from '@/services/driverService'
 import { requireAdmin } from '@/lib/auth/requireAdmin'
 import { requireRole, STAFF_ROLES } from '@/lib/auth/requireRole'
+import { blankToNull, LOCATION_FK_FIELDS } from '@/lib/blankToNull'
 
 export async function GET(request: NextRequest) {
   const gate = await requireRole(STAFF_ROLES)
@@ -44,8 +45,10 @@ export async function POST(request: NextRequest) {
   const gate = await requireAdmin()
   if (gate.error) return gate.error
   try {
-    const body = await request.json()
-    
+    // Optional uuid fields arrive as '' from the add form; Postgres rejects that
+    // with 22P02. See blankToNull.
+    const body = blankToNull(await request.json(), LOCATION_FK_FIELDS)
+
     // Validate required fields
     if (!body.user_id || !body.transport_company_id || !body.license_number || !body.status) {
       return NextResponse.json(
