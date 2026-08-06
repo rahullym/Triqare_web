@@ -181,7 +181,7 @@ export default function AddDriverPage() {
     setIsSubmitting(true)
 
     try {
-      const response = await fetch('/api/transport/drivers/add?test=true', {
+      const response = await fetch('/api/transport/drivers/add', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

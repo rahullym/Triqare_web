@@ -84,10 +84,14 @@ export default function EditDriverPage({ params }: { params: Promise<{ id: strin
             transport_company_id: data.driver.transport_company_id,
             transport_company_name: data.driver.transport_company?.company_name || 'No company assigned',
             transport_company_registration: data.driver.transport_company?.registration_number || 'N/A',
-            full_name: data.driver.user?.full_name || 'Unknown Driver',
-            phone_number: data.driver.user?.phone || 'No phone provided',
-            email: data.driver.user?.email || 'No email provided',
-            license_number: data.driver.license_number || 'No license number',
+            // Placeholders belong in the input's placeholder, not its value: the
+            // old fallbacks put the literal strings "No phone provided" /
+            // "No email provided" into the editable fields, so an admin saving an
+            // otherwise untouched form would have written them to the record.
+            full_name: data.driver.user?.full_name || '',
+            phone_number: data.driver.user?.phone || '',
+            email: data.driver.user?.email || '',
+            license_number: data.driver.license_number || '',
             aadhar_number: data.driver.aadhar_number || '',
             is_verified: data.driver.is_verified || false,
             status: data.driver.status || 'available'
@@ -131,10 +135,13 @@ export default function EditDriverPage({ params }: { params: Promise<{ id: strin
       newErrors.full_name = 'Full name is required'
     }
 
-    if (!formData.phone_number.trim()) {
-      newErrors.phone_number = 'Phone number is required'
-    } else if (!/^\+?[\d\s\-\(\)]+$/.test(formData.phone_number)) {
-      newErrors.phone_number = 'Please enter a valid phone number'
+    // Optional, exactly as it is when the driver is first added — the edit form
+    // used to demand a phone number that the add form never collected, so every
+    // later edit of a phone-less driver was blocked on a field the record was
+    // legitimately allowed to leave empty.
+    const phone = formData.phone_number.trim()
+    if (phone && !/^[6-9]\d{9}$/.test(phone)) {
+      newErrors.phone_number = 'Enter a 10-digit Indian mobile number (no country code, no leading zero)'
     }
 
     if (!formData.email.trim()) {
@@ -161,6 +168,28 @@ export default function EditDriverPage({ params }: { params: Promise<{ id: strin
     setIsLoading(true)
 
     try {
+      // Name, phone and email live on `users`; licence, Aadhaar, status and
+      // verification live on `drivers`. The form used to POST only the driver
+      // half, so editing a phone number reported success and saved nothing —
+      // re-opening the form showed the field empty again.
+      const userResponse = await fetch(`/api/users/${resolvedParams.id}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          full_name: formData.full_name.trim(),
+          email: formData.email.trim().toLowerCase(),
+          phone: formData.phone_number.trim() || null
+        })
+      })
+
+      const userData = await userResponse.json().catch(() => ({}))
+
+      if (!userResponse.ok || userData.success === false) {
+        throw new Error(userData.error || 'Failed to update the driver\'s contact details')
+      }
+
       const response = await fetch(`/api/drivers/${resolvedParams.id}`, {
         method: 'PUT',
         headers: {
@@ -234,7 +263,7 @@ export default function EditDriverPage({ params }: { params: Promise<{ id: strin
             Edit Driver
           </h1>
           <p className="text-gray-600">
-            Update {driver.full_name}'s information and settings
+            Update {driver.full_name || 'this driver'}&apos;s information and settings
           </p>
         </div>
       </div>
@@ -344,7 +373,7 @@ export default function EditDriverPage({ params }: { params: Promise<{ id: strin
               {/* Phone Number */}
               <div className="space-y-2">
                 <Label htmlFor="phone_number">
-                  Phone Number <span className="text-red-500">*</span>
+                  Phone Number
                 </Label>
                 <div className="relative">
                   <Phone className="absolute left-3 top-3 h-4 w-4 text-gray-400" />
@@ -352,7 +381,7 @@ export default function EditDriverPage({ params }: { params: Promise<{ id: strin
                     id="phone_number"
                     value={formData.phone_number}
                     onChange={(e) => handleInputChange('phone_number', e.target.value)}
-                    placeholder="+1-555-0123"
+                    placeholder="10-digit mobile number"
                     className={`pl-10 ${errors.phone_number ? 'border-red-500' : ''}`}
                   />
                 </div>

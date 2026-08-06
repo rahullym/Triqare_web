@@ -34,6 +34,7 @@ import Link from 'next/link'
 import { useTransportCompanies, useDeleteTransportCompany, useTransportCompanyStats } from '@/hooks/useTransportCompanies'
 import { useCountries, useStates, useCities } from '@/hooks/useLocations'
 import { useServerPagination } from '@/hooks/useServerPagination'
+import { uploadCsvInChunks, type CsvChunkProgress } from '@/lib/csv/uploadCsvInChunks'
 import { PaginationWithInfo } from '@/components/ui/pagination'
 
 export default function TransportCompaniesPage() {
@@ -53,6 +54,7 @@ export default function TransportCompaniesPage() {
   const [csvFile, setCsvFile] = useState<File | null>(null)
   const [csvUploading, setCsvUploading] = useState(false)
   const [csvResult, setCsvResult] = useState<{ success: number; failed: number; errors: string[] } | null>(null)
+  const [csvProgress, setCsvProgress] = useState<CsvChunkProgress | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   // Pagination
@@ -138,36 +140,29 @@ export default function TransportCompaniesPage() {
 
     setCsvUploading(true)
     setCsvResult(null)
+    setCsvProgress(null)
 
-    try {
-      const formData = new FormData()
-      formData.append('file', csvFile)
+    // Uploaded a few rows at a time: provisioning a login per company is slow
+    // enough that a full file overran the serverless function timeout, and the
+    // dead connection surfaced as "Network error / 0 imported" even though rows
+    // had been created. See uploadCsvInChunks.
+    const result = await uploadCsvInChunks('/api/transport-companies/upload-csv', csvFile, {
+      onProgress: setCsvProgress
+    })
 
-      const response = await fetch('/api/transport-companies/upload-csv', {
-        method: 'POST',
-        body: formData
-      })
+    setCsvResult(result)
+    setCsvProgress(null)
+    setCsvUploading(false)
 
-      const result = await response.json()
-
-      if (response.ok) {
-        setCsvResult({ success: result.success, failed: result.failed, errors: result.errors || [] })
-        if (result.success > 0) {
-          toast.success(`Successfully imported ${result.success} transport companies`)
-          refetch()
-        }
-        if (result.failed > 0) {
-          toast.warning(`${result.failed} records failed to import`)
-        }
-      } else {
-        toast.error(result.error || 'Upload failed')
-        setCsvResult({ success: 0, failed: 0, errors: [result.error] })
-      }
-    } catch (error) {
-      toast.error('Failed to upload CSV')
-      setCsvResult({ success: 0, failed: 0, errors: ['Network error'] })
-    } finally {
-      setCsvUploading(false)
+    if (result.success > 0) {
+      toast.success(`Successfully imported ${result.success} transport companies`)
+      refetch()
+    }
+    if (result.failed > 0) {
+      toast.warning(`${result.failed} record(s) failed to import`)
+    }
+    if (result.success === 0 && result.failed === 0 && result.errors.length > 0) {
+      toast.error(result.errors[0])
     }
   }
 
@@ -562,6 +557,20 @@ export default function TransportCompaniesPage() {
                 </p>
               )}
             </div>
+
+            {csvUploading && csvProgress && (
+              <div className="rounded-lg border p-4">
+                <p className="text-sm text-muted-foreground">
+                  Importing row {Math.min(csvProgress.processed + 1, csvProgress.total)} of {csvProgress.total}…
+                </p>
+                <div className="mt-2 h-1.5 w-full rounded-full bg-muted">
+                  <div
+                    className="h-1.5 rounded-full bg-primary transition-all"
+                    style={{ width: `${Math.round((csvProgress.processed / Math.max(csvProgress.total, 1)) * 100)}%` }}
+                  />
+                </div>
+              </div>
+            )}
 
             {csvResult && (
               <div className="rounded-lg border p-4 space-y-2">

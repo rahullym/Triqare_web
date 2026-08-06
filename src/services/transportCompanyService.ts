@@ -1,4 +1,23 @@
 import { supabase } from '@/lib/supabase'
+import { blankToNull, LOCATION_FK_FIELDS } from '@/lib/blankToNull'
+
+/**
+ * Optional columns the edit form holds as '' when the operator leaves them blank.
+ *
+ * The location ids are uuid columns — Postgres rejects '' outright
+ * (22P02 invalid input syntax for type uuid: ""), which is why simply flipping
+ * "Pending" to "Verified" on a company with no pincode failed with an
+ * unactionable "Failed to update transport company".
+ *
+ * `registration_number` is nullable UNIQUE: stored as '' it collides with the
+ * next company that also has none ("duplicate key"), where NULLs never collide.
+ */
+const BLANKABLE_FIELDS = [
+  ...LOCATION_FK_FIELDS,
+  'registration_number',
+  'license_valid_till',
+  'address_line',
+] as const
 
 export interface TransportCompany {
   user_id: string
@@ -16,6 +35,7 @@ export interface TransportCompany {
     id: string
     full_name: string
     email: string
+    phone?: string | null
     role: string
     created_at: string
   }
@@ -157,6 +177,7 @@ export class TransportCompanyService {
             id,
             full_name,
             email,
+            phone,
             role,
             created_at
           ),
@@ -172,7 +193,8 @@ export class TransportCompanyService {
             user:users!drivers_user_id_fkey(
               id,
               full_name,
-              email
+              email,
+              phone
             )
           )
         `)
@@ -230,7 +252,7 @@ export class TransportCompanyService {
     try {
       const { data: result, error } = await supabase
         .from('transport_companies')
-        .insert([data])
+        .insert([blankToNull(data as unknown as Record<string, unknown>, BLANKABLE_FIELDS)])
         .select(`
           *,
           user:users!transport_companies_user_id_fkey(
@@ -263,7 +285,7 @@ export class TransportCompanyService {
     try {
       const { data: result, error } = await supabase
         .from('transport_companies')
-        .update(data)
+        .update(blankToNull(data as unknown as Record<string, unknown>, BLANKABLE_FIELDS))
         .eq('user_id', id)
         .select(`
           *,

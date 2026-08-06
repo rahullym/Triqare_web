@@ -79,8 +79,7 @@ export default function TransportProfilePage() {
     address: '',
     registrationNumber: '',
     licenseNumber: '',
-    operatingHours: '',
-    serviceArea: '',
+
     country_id: '',
     state_id: '',
     city_id: '',
@@ -144,8 +143,7 @@ export default function TransportProfilePage() {
               address: companyData.company.address_line || '',
               registrationNumber: companyData.company.registration_number || '',
               licenseNumber: companyData.company.license_valid_till || '', // License number stored as text in license_valid_till
-              operatingHours: '24/7',
-              serviceArea: 'Metropolitan Area',
+
               country_id: companyData.company.country_id || '',
               state_id: companyData.company.state_id || '',
               city_id: companyData.company.city_id || '',
@@ -164,8 +162,7 @@ export default function TransportProfilePage() {
             address: '',
             registrationNumber: '',
             licenseNumber: '',
-            operatingHours: '24/7',
-            serviceArea: 'Metropolitan Area',
+
             country_id: '',
             state_id: '',
             city_id: '',
@@ -232,7 +229,7 @@ export default function TransportProfilePage() {
           last_name: companyData.contactPerson.split(' ').slice(1).join(' ') || '',
           full_name: companyData.contactPerson,
           phone: companyData.phone,
-          bio: `Transport company: ${companyData.companyName} operating in ${companyData.serviceArea}`,
+          bio: `Transport company: ${companyData.companyName}`,
           // License number is now stored in transport_companies.license_valid_till
         }),
       })
@@ -498,14 +495,25 @@ export default function TransportProfilePage() {
                   <Label htmlFor="email">Email Address</Label>
                   <div className="relative">
                     <Mail className="absolute left-3 top-3 h-4 w-4 text-gray-400" />
+                    {/*
+                      Read-only on purpose. This is the sign-in address, and Save
+                      never sent it — the field accepted edits, reported "Profile
+                      updated successfully" and discarded them. Changing a login
+                      email is an admin action (Admin → Transport Companies → Edit),
+                      where it is applied to the credential as well as the profile.
+                    */}
                     <Input
                       id="email"
                       type="email"
                       value={companyData.email}
-                      onChange={(e) => setCompanyData(prev => ({ ...prev, email: e.target.value }))}
+                      readOnly
+                      disabled
                       className="pl-10"
                     />
                   </div>
+                  <p className="text-xs text-muted-foreground">
+                    This is your sign-in address. Ask your Triqare administrator to change it.
+                  </p>
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="phone">Phone Number</Label>
@@ -519,22 +527,14 @@ export default function TransportProfilePage() {
                     />
                   </div>
                 </div>
-                <div className="space-y-2">
-                  <Label htmlFor="operatingHours">Operating Hours</Label>
-                  <Input
-                    id="operatingHours"
-                    value={companyData.operatingHours}
-                    onChange={(e) => setCompanyData(prev => ({ ...prev, operatingHours: e.target.value }))}
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="serviceArea">Service Area</Label>
-                  <Input
-                    id="serviceArea"
-                    value={companyData.serviceArea}
-                    onChange={(e) => setCompanyData(prev => ({ ...prev, serviceArea: e.target.value }))}
-                  />
-                </div>
+                {/*
+                  "Operating Hours" and "Service Area" used to sit here. Neither had
+                  anywhere to be stored: both were hard-coded to "24/7" and
+                  "Metropolitan Area" on load and dropped on save, so every company
+                  saw the same two values, edited them, and was told the profile had
+                  been updated. Removed rather than faked — reinstate them together
+                  with real columns if the business needs them.
+                */}
               </div>
               
               <div className="space-y-2">

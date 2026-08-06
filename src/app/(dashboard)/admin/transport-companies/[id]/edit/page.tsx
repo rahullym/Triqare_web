@@ -20,7 +20,8 @@ import {
   CheckCircle,
   AlertCircle,
   Shield,
-  ShieldCheck
+  ShieldCheck,
+  UserRound
 } from 'lucide-react'
 import Link from 'next/link'
 import { useTransportCompany, useUpdateTransportCompany } from '@/hooks/useTransportCompanies'
@@ -38,10 +39,32 @@ interface FormData {
   pincode_id: string
 }
 
+/**
+ * The login behind the company. It lives on `users`, not `transport_companies`,
+ * so it is saved through the user endpoint alongside the company update — the
+ * edit screen previously showed no way to see or correct the address the company
+ * actually signs in with.
+ */
+interface ContactData {
+  full_name: string
+  email: string
+  phone: string
+}
+
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+const INDIAN_MOBILE_PATTERN = /^[6-9]\d{9}$/
+
 export default function EditTransportCompanyPage({ params }: { params: Promise<{ id: string }> }) {
   const router = useRouter()
   const resolvedParams = use(params)
   const [success, setSuccess] = useState(false)
+  const [contactError, setContactError] = useState<string | null>(null)
+  const [contactSaving, setContactSaving] = useState(false)
+  const [contact, setContact] = useState<ContactData>({
+    full_name: '',
+    email: '',
+    phone: ''
+  })
   const [formData, setFormData] = useState<FormData>({
     company_name: '',
     address_line: '',
@@ -76,6 +99,11 @@ export default function EditTransportCompanyPage({ params }: { params: Promise<{
         city_id: transportCompany.city_id || '',
         pincode_id: transportCompany.pincode_id || ''
       })
+      setContact({
+        full_name: transportCompany.user?.full_name || '',
+        email: transportCompany.user?.email || '',
+        phone: transportCompany.user?.phone || ''
+      })
     }
   }, [transportCompany])
 
@@ -83,8 +111,72 @@ export default function EditTransportCompanyPage({ params }: { params: Promise<{
     setFormData(prev => ({ ...prev, [field]: value }))
   }
 
+  const handleContactChange = (field: keyof ContactData, value: string) => {
+    setContact(prev => ({ ...prev, [field]: value }))
+    setContactError(null)
+  }
+
+  /**
+   * Save the login fields. Kept separate from the company update because they are
+   * different tables behind different endpoints; the company save must not be
+   * held hostage by a contact-only validation error, and vice versa.
+   */
+  const saveContact = async (userId: string): Promise<boolean> => {
+    const email = contact.email.trim().toLowerCase()
+    const fullName = contact.full_name.trim()
+    const phone = contact.phone.trim()
+
+    if (!fullName) {
+      setContactError('Contact name is required.')
+      return false
+    }
+    if (!EMAIL_PATTERN.test(email)) {
+      setContactError(`"${contact.email}" is not a valid email address.`)
+      return false
+    }
+    if (phone && !INDIAN_MOBILE_PATTERN.test(phone)) {
+      setContactError(`"${phone}" is not a valid 10-digit Indian mobile number (no country code, no leading zero).`)
+      return false
+    }
+
+    const unchanged =
+      fullName === (transportCompany?.user?.full_name || '') &&
+      email === (transportCompany?.user?.email || '').toLowerCase() &&
+      phone === (transportCompany?.user?.phone || '')
+    if (unchanged) return true
+
+    setContactSaving(true)
+    try {
+      const response = await fetch(`/api/users/${userId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ full_name: fullName, email, phone: phone || null })
+      })
+      const result = await response.json().catch(() => ({}))
+      if (!response.ok || result.success === false) {
+        setContactError(result.error || 'Failed to update the contact details.')
+        return false
+      }
+      return true
+    } catch {
+      setContactError('Failed to update the contact details.')
+      return false
+    } finally {
+      setContactSaving(false)
+    }
+  }
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
+
+    const userId = transportCompany?.user?.id
+    if (userId) {
+      const contactSaved = await saveContact(userId)
+      if (!contactSaved) {
+        toast.error('Fix the contact details before saving.')
+        return
+      }
+    }
 
     try {
       await updateTransportCompany(resolvedParams.id, formData)
@@ -95,7 +187,9 @@ export default function EditTransportCompanyPage({ params }: { params: Promise<{
         router.push('/admin/transport-companies')
       }, 2000)
     } catch (err) {
-      toast.error('Failed to update transport company')
+      // The hook's `error` state carries the real reason (shown above the form);
+      // a bare "Failed to update" toast is what left the operator with nothing to act on.
+      toast.error(err instanceof Error ? err.message : 'Failed to update transport company')
     }
   }
 
@@ -229,6 +323,57 @@ export default function EditTransportCompanyPage({ params }: { params: Promise<{
           </CardContent>
         </Card>
 
+        {/* Contact / login account */}
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center">
+              <UserRound className="h-5 w-5 mr-2" />
+              Contact & Login
+            </CardTitle>
+            <CardDescription>
+              The person who signs in for this company. Changing the email changes the address they log in with.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            {contactError && (
+              <div className="flex items-start text-red-800 bg-red-50 border border-red-200 rounded-md p-3">
+                <AlertCircle className="h-4 w-4 mr-2 mt-0.5 shrink-0" />
+                <span className="text-sm">{contactError}</span>
+              </div>
+            )}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="md:col-span-2">
+                <Label htmlFor="contact_full_name">Contact Name *</Label>
+                <Input
+                  id="contact_full_name"
+                  value={contact.full_name}
+                  onChange={(e) => handleContactChange('full_name', e.target.value)}
+                  placeholder="Enter contact person's name"
+                />
+              </div>
+              <div>
+                <Label htmlFor="contact_email">Email *</Label>
+                <Input
+                  id="contact_email"
+                  type="email"
+                  value={contact.email}
+                  onChange={(e) => handleContactChange('email', e.target.value)}
+                  placeholder="name@example.com"
+                />
+              </div>
+              <div>
+                <Label htmlFor="contact_phone">Phone</Label>
+                <Input
+                  id="contact_phone"
+                  value={contact.phone}
+                  onChange={(e) => handleContactChange('phone', e.target.value)}
+                  placeholder="10-digit mobile number"
+                />
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
         {/* Verification Status */}
         <Card>
           <CardHeader>
@@ -355,8 +500,8 @@ export default function EditTransportCompanyPage({ params }: { params: Promise<{
               Cancel
             </Button>
           </Link>
-          <Button type="submit" disabled={loading || success}>
-            {loading ? (
+          <Button type="submit" disabled={loading || contactSaving || success}>
+            {loading || contactSaving ? (
               <>
                 <Loader2 className="h-4 w-4 mr-2 animate-spin" />
                 Updating...

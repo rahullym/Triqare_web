@@ -74,15 +74,29 @@ export async function POST(request: NextRequest) {
       )
     }
 
+    // Row window — see the same block in the transport-company importer. Each row
+    // provisions a login, so a whole file in one request outran the serverless
+    // function timeout and the browser reported a bare "Network error" for an
+    // import that had partly succeeded. Absent params = whole file (back-compat).
+    const offset = Math.max(0, Number(formData.get('offset') ?? 0) || 0)
+    const rawLimit = Number(formData.get('limit') ?? 0) || 0
+    const limit = rawLimit > 0 ? rawLimit : parsed.rows.length
+    const rowsToProcess = parsed.rows.slice(offset, offset + limit)
+    const isFirstChunk = offset === 0
+
     const results = {
       success: 0,
       // Malformed rows never reach the import loop, so seed the failure count with
       // them — otherwise a file where half the rows had a stray comma reports
-      // "0 failed" while quietly importing only the other half.
-      failed: parsed.errors.length,
-      errors: [...parsed.errors],
+      // "0 failed" while quietly importing only the other half. First chunk only,
+      // or a chunked upload counts them once per request.
+      failed: isFirstChunk ? parsed.errors.length : 0,
+      errors: isFirstChunk ? [...parsed.errors] : [],
       usersCreated: 0,
-      createdUsers: [] as any[]
+      createdUsers: [] as any[],
+      totalRows: parsed.rows.length,
+      processedRows: rowsToProcess.length,
+      nextOffset: offset + rowsToProcess.length
     }
 
     // Emails seen earlier IN THIS FILE. The existing-user check below reads the
@@ -91,7 +105,7 @@ export async function POST(request: NextRequest) {
     // first and fail the second with a confusing "already exists".
     const seenEmails = new Set<string>()
 
-    for (const { line, values } of parsed.rows) {
+    for (const { line, values } of rowsToProcess) {
       const record = values as unknown as CSVDriver
       try {
         // Validate required fields

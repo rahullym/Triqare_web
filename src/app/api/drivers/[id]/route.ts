@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { DriverService } from '@/services/driverService'
 import { requireAdmin } from '@/lib/auth/requireAdmin'
 import { requireRole, STAFF_ROLES } from '@/lib/auth/requireRole'
+import { blankToNull, LOCATION_FK_FIELDS } from '@/lib/blankToNull'
 
 export async function GET(
   request: NextRequest,
@@ -37,8 +38,11 @@ export async function PUT(
   if (gate.error) return gate.error
   try {
     const resolvedParams = await params
-    const body = await request.json()
-    
+    // Same treatment as the create route: an edit form holds cleared optional
+    // location fields as '', which Postgres rejects for a uuid column with 22P02
+    // and the operator sees only "Failed to update driver". See blankToNull.
+    const body = blankToNull(await request.json(), LOCATION_FK_FIELDS)
+
     // Validate status if provided
     if (body.status) {
       const validStatuses = ['available', 'assigned', 'on_trip', 'inactive']

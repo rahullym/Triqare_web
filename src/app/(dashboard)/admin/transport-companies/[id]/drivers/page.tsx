@@ -1,6 +1,20 @@
 'use client'
 
-import { useState, useEffect, useMemo, use } from 'react'
+/**
+ * Drivers belonging to one transport company.
+ *
+ * WHAT WAS WRONG. This page was wired to a `mockDrivers` array: every company —
+ * newly created ones included — showed the same three invented drivers (John
+ * Smith, Sarah Johnson, Mike Wilson of "Metro Emergency Transport"), and Delete
+ * only console.logged. An admin who added a real driver saw the same three
+ * strangers afterwards and no sign of the driver they had just created.
+ *
+ * It now reads the company and its drivers from the API, and the statuses shown
+ * are the ones drivers actually have (available / assigned / on_trip / inactive)
+ * rather than the invented active/inactive/suspended set.
+ */
+
+import { useState, useEffect, useMemo, useCallback, use } from 'react'
 import { useRouter } from 'next/navigation'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
@@ -8,32 +22,32 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { PaginationWithInfo } from '@/components/ui/pagination'
 import { usePagination } from '@/hooks/usePagination'
-import { 
-  Users, 
-  Plus, 
-  Search, 
-  Edit, 
-  Trash2, 
-  Phone, 
-  Mail, 
+import { toast } from 'sonner'
+import {
+  Users,
+  Plus,
+  Search,
+  Edit,
+  Trash2,
+  Phone,
+  Mail,
   FileText,
-  Truck,
   ArrowLeft,
   Building2,
-  Activity
+  Activity,
+  ShieldCheck
 } from 'lucide-react'
+
+type DriverStatus = 'available' | 'assigned' | 'on_trip' | 'inactive'
 
 interface Driver {
   id: string
-  transport_company_id: string
   full_name: string
   phone_number: string
   email: string
   license_number: string
-  certification_documents: string
-  status: 'active' | 'inactive' | 'suspended'
-  created_at: string
-  updated_at: string
+  status: DriverStatus
+  is_verified: boolean
 }
 
 interface TransportCompany {
@@ -42,82 +56,82 @@ interface TransportCompany {
   registration_number: string
 }
 
+const STATUS_LABELS: Record<DriverStatus, string> = {
+  available: 'Available',
+  assigned: 'Assigned',
+  on_trip: 'On Trip',
+  inactive: 'Inactive'
+}
+
+// One page of the API's server-side pagination is plenty: no company in the
+// system is anywhere near this many drivers, and the list paginates locally.
+const DRIVER_FETCH_LIMIT = 200
+
 export default function CompanyDriversPage({ params }: { params: Promise<{ id: string }> }) {
   const resolvedParams = use(params)
   const router = useRouter()
   const [searchTerm, setSearchTerm] = useState('')
-  const [selectedStatus, setSelectedStatus] = useState<'all' | 'active' | 'inactive' | 'suspended'>('all')
+  const [selectedStatus, setSelectedStatus] = useState<'all' | DriverStatus>('all')
   const [company, setCompany] = useState<TransportCompany | null>(null)
   const [drivers, setDrivers] = useState<Driver[]>([])
   const [isLoading, setIsLoading] = useState(true)
+  const [deletingId, setDeletingId] = useState<string | null>(null)
+
+  const fetchDrivers = useCallback(async () => {
+    const response = await fetch(
+      `/api/drivers?transport_company_id=${resolvedParams.id}&limit=${DRIVER_FETCH_LIMIT}`
+    )
+    const data = await response.json()
+    if (!response.ok || !data.success) {
+      throw new Error(data.error || 'Failed to load drivers')
+    }
+
+    setDrivers(
+      (data.drivers || []).map((driver: any) => ({
+        id: driver.user_id,
+        full_name: driver.user?.full_name || 'Unnamed driver',
+        phone_number: driver.user?.phone || '',
+        email: driver.user?.email || '',
+        license_number: driver.license_number || '',
+        status: (driver.status || 'available') as DriverStatus,
+        is_verified: !!driver.is_verified
+      }))
+    )
+  }, [resolvedParams.id])
 
   useEffect(() => {
-    // In a real app, you would fetch data from your API
     const fetchData = async () => {
       try {
-        // Mock data - replace with actual API calls
-        const mockCompany: TransportCompany = {
-          id: resolvedParams.id,
-          name: 'Metro Emergency Transport',
-          registration_number: 'TC-2024-001'
+        const companyResponse = await fetch(`/api/transport-companies/${resolvedParams.id}`)
+        const companyData = await companyResponse.json()
+
+        if (companyResponse.ok && companyData.transportCompany) {
+          setCompany({
+            id: companyData.transportCompany.user_id,
+            name: companyData.transportCompany.company_name,
+            registration_number: companyData.transportCompany.registration_number || 'No registration number'
+          })
         }
 
-        const mockDrivers: Driver[] = [
-          {
-            id: '1',
-            transport_company_id: resolvedParams.id,
-            full_name: 'John Smith',
-            phone_number: '+1-555-0201',
-            email: 'john.smith@metroemt.com',
-            license_number: 'DL-12345',
-            certification_documents: 'EMT-Basic, CPR',
-            status: 'active',
-            created_at: '2024-01-20T10:00:00Z',
-            updated_at: '2024-01-20T10:00:00Z'
-          },
-          {
-            id: '2',
-            transport_company_id: resolvedParams.id,
-            full_name: 'Sarah Johnson',
-            phone_number: '+1-555-0202',
-            email: 'sarah.johnson@metroemt.com',
-            license_number: 'DL-12346',
-            certification_documents: 'EMT-Paramedic, ACLS',
-            status: 'active',
-            created_at: '2024-01-25T14:30:00Z',
-            updated_at: '2024-02-01T09:15:00Z'
-          },
-          {
-            id: '3',
-            transport_company_id: resolvedParams.id,
-            full_name: 'Mike Wilson',
-            phone_number: '+1-555-0203',
-            email: 'mike.wilson@metroemt.com',
-            license_number: 'DL-12347',
-            certification_documents: 'EMT-Basic',
-            status: 'suspended',
-            created_at: '2024-02-01T16:45:00Z',
-            updated_at: '2024-02-10T11:20:00Z'
-          }
-        ]
-
-        setCompany(mockCompany)
-        setDrivers(mockDrivers)
+        await fetchDrivers()
       } catch (error) {
-        console.error('Error fetching data:', error)
+        console.error('Error loading company drivers:', error)
+        toast.error(error instanceof Error ? error.message : 'Failed to load drivers')
       } finally {
         setIsLoading(false)
       }
     }
 
     fetchData()
-  }, [resolvedParams.id])
+  }, [resolvedParams.id, fetchDrivers])
 
   const filteredDrivers = useMemo(() => {
+    const term = searchTerm.toLowerCase()
     return drivers.filter(driver => {
-      const matchesSearch = driver.full_name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                           driver.email.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                           driver.license_number.toLowerCase().includes(searchTerm.toLowerCase())
+      const matchesSearch =
+        driver.full_name.toLowerCase().includes(term) ||
+        driver.email.toLowerCase().includes(term) ||
+        driver.license_number.toLowerCase().includes(term)
       const matchesStatus = selectedStatus === 'all' || driver.status === selectedStatus
       return matchesSearch && matchesStatus
     })
@@ -129,12 +143,26 @@ export default function CompanyDriversPage({ params }: { params: Promise<{ id: s
     pageSizeOptions: [5, 10, 20, 50]
   })
 
-  const handleDelete = (id: string) => {
-    if (confirm('Are you sure you want to delete this driver? This action cannot be undone.')) {
-      // In a real app, you would call your API here
-      console.log('Deleting driver:', id)
+  const handleDelete = async (id: string, name: string) => {
+    if (!confirm(`Delete ${name}? This action cannot be undone.`)) return
+
+    setDeletingId(id)
+    try {
+      const response = await fetch(`/api/drivers/${id}`, { method: 'DELETE' })
+      const data = await response.json().catch(() => ({}))
+      if (!response.ok || data.success === false) {
+        throw new Error(data.error || 'Failed to delete driver')
+      }
+      toast.success(`${name} deleted`)
+      await fetchDrivers()
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Failed to delete driver')
+    } finally {
+      setDeletingId(null)
     }
   }
+
+  const countByStatus = (status: DriverStatus) => drivers.filter(d => d.status === status).length
 
   if (isLoading) {
     return (
@@ -181,7 +209,7 @@ export default function CompanyDriversPage({ params }: { params: Promise<{ id: s
           </Button>
           <div>
             <h1 className="text-3xl font-bold text-gray-900">
-              👥 {company.name} - Drivers
+              {company.name} — Drivers
             </h1>
             <p className="text-gray-600">
               Manage drivers for {company.name} ({company.registration_number})
@@ -213,30 +241,30 @@ export default function CompanyDriversPage({ params }: { params: Promise<{ id: s
 
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Active Drivers</CardTitle>
+            <CardTitle className="text-sm font-medium">Available</CardTitle>
             <Activity className="h-4 w-4 text-green-500" />
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold text-green-600">
-              {drivers.filter(d => d.status === 'active').length}
+              {countByStatus('available')}
             </div>
             <p className="text-xs text-muted-foreground">
-              Currently active
+              Ready for dispatch
             </p>
           </CardContent>
         </Card>
 
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Suspended</CardTitle>
-            <Users className="h-4 w-4 text-red-500" />
+            <CardTitle className="text-sm font-medium">Verified</CardTitle>
+            <ShieldCheck className="h-4 w-4 text-blue-500" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold text-red-600">
-              {drivers.filter(d => d.status === 'suspended').length}
+            <div className="text-2xl font-bold text-blue-600">
+              {drivers.filter(d => d.is_verified).length}
             </div>
             <p className="text-xs text-muted-foreground">
-              Need attention
+              Verified drivers
             </p>
           </CardContent>
         </Card>
@@ -257,7 +285,7 @@ export default function CompanyDriversPage({ params }: { params: Promise<{ id: s
                 />
               </div>
             </div>
-            <div className="flex gap-2">
+            <div className="flex flex-wrap gap-2">
               <Button
                 variant={selectedStatus === 'all' ? 'default' : 'outline'}
                 onClick={() => setSelectedStatus('all')}
@@ -265,27 +293,16 @@ export default function CompanyDriversPage({ params }: { params: Promise<{ id: s
               >
                 All ({drivers.length})
               </Button>
-              <Button
-                variant={selectedStatus === 'active' ? 'default' : 'outline'}
-                onClick={() => setSelectedStatus('active')}
-                size="sm"
-              >
-                Active ({drivers.filter(d => d.status === 'active').length})
-              </Button>
-              <Button
-                variant={selectedStatus === 'inactive' ? 'default' : 'outline'}
-                onClick={() => setSelectedStatus('inactive')}
-                size="sm"
-              >
-                Inactive ({drivers.filter(d => d.status === 'inactive').length})
-              </Button>
-              <Button
-                variant={selectedStatus === 'suspended' ? 'default' : 'outline'}
-                onClick={() => setSelectedStatus('suspended')}
-                size="sm"
-              >
-                Suspended ({drivers.filter(d => d.status === 'suspended').length})
-              </Button>
+              {(Object.keys(STATUS_LABELS) as DriverStatus[]).map(status => (
+                <Button
+                  key={status}
+                  variant={selectedStatus === status ? 'default' : 'outline'}
+                  onClick={() => setSelectedStatus(status)}
+                  size="sm"
+                >
+                  {STATUS_LABELS[status]} ({countByStatus(status)})
+                </Button>
+              ))}
             </div>
           </div>
         </CardContent>
@@ -299,9 +316,11 @@ export default function CompanyDriversPage({ params }: { params: Promise<{ id: s
               <Users className="h-12 w-12 text-gray-400 mx-auto mb-4" />
               <h3 className="text-lg font-medium text-gray-900 mb-2">No drivers found</h3>
               <p className="text-gray-600 mb-4">
-                {searchTerm ? 'Try adjusting your search criteria.' : 'This company has no drivers yet.'}
+                {searchTerm || selectedStatus !== 'all'
+                  ? 'Try adjusting your search criteria.'
+                  : 'This company has no drivers yet.'}
               </p>
-              {!searchTerm && (
+              {!searchTerm && selectedStatus === 'all' && (
                 <Button asChild>
                   <a href={`/admin/transport-companies/${resolvedParams.id}/drivers/add`}>
                     <Plus className="h-4 w-4 mr-2" />
@@ -316,73 +335,67 @@ export default function CompanyDriversPage({ params }: { params: Promise<{ id: s
         <>
           <div className="grid gap-6">
             {pagination.currentPageData.map((driver) => (
-          <Card key={driver.id} className="hover:shadow-md transition-shadow">
-            <CardContent className="pt-6">
-              <div className="flex items-start justify-between">
-                <div className="flex-1">
-                  <div className="flex items-center gap-3 mb-3">
-                    <h3 className="text-lg font-semibold text-gray-900">{driver.full_name}</h3>
-                    <Badge 
-                      variant={
-                        driver.status === 'active' ? 'default' : 
-                        driver.status === 'suspended' ? 'destructive' : 'secondary'
-                      }
-                    >
-                      {driver.status}
-                    </Badge>
-                    <Badge variant="outline" className="font-mono text-xs">
-                      {driver.license_number}
-                    </Badge>
-                  </div>
-                  
-                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 text-sm">
-                    <div className="flex items-center text-gray-600">
-                      <Phone className="h-4 w-4 mr-2" />
-                      {driver.phone_number}
+              <Card key={driver.id} className="hover:shadow-md transition-shadow">
+                <CardContent className="pt-6">
+                  <div className="flex items-start justify-between">
+                    <div className="flex-1">
+                      <div className="flex items-center gap-3 mb-3 flex-wrap">
+                        <h3 className="text-lg font-semibold text-gray-900">{driver.full_name}</h3>
+                        <Badge variant={driver.status === 'inactive' ? 'secondary' : 'default'}>
+                          {STATUS_LABELS[driver.status]}
+                        </Badge>
+                        {driver.is_verified && (
+                          <Badge variant="outline" className="text-green-700 border-green-300">
+                            Verified
+                          </Badge>
+                        )}
+                        {driver.license_number && (
+                          <Badge variant="outline" className="font-mono text-xs">
+                            {driver.license_number}
+                          </Badge>
+                        )}
+                      </div>
+
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+                        <div className="flex items-center text-gray-600">
+                          <Phone className="h-4 w-4 mr-2" />
+                          {driver.phone_number || 'No phone number'}
+                        </div>
+                        <div className="flex items-center text-gray-600">
+                          <Mail className="h-4 w-4 mr-2" />
+                          {driver.email || 'No email'}
+                        </div>
+                      </div>
                     </div>
-                    <div className="flex items-center text-gray-600">
-                      <Mail className="h-4 w-4 mr-2" />
-                      {driver.email}
-                    </div>
-                    <div className="flex items-center text-gray-600">
-                      <FileText className="h-4 w-4 mr-2" />
-                      {driver.certification_documents}
+
+                    <div className="flex items-center gap-2 ml-4">
+                      <Button variant="outline" size="sm" asChild>
+                        <a href={`/admin/drivers/${driver.id}`}>
+                          <FileText className="h-4 w-4 mr-1" />
+                          View
+                        </a>
+                      </Button>
+                      <Button variant="outline" size="sm" asChild>
+                        <a href={`/admin/drivers/${driver.id}/edit`}>
+                          <Edit className="h-4 w-4 mr-1" />
+                          Edit
+                        </a>
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => handleDelete(driver.id, driver.full_name)}
+                        disabled={deletingId === driver.id}
+                        className="text-red-600 hover:text-red-700"
+                      >
+                        <Trash2 className="h-4 w-4 mr-1" />
+                        {deletingId === driver.id ? 'Deleting…' : 'Delete'}
+                      </Button>
                     </div>
                   </div>
-                  
-                  <div className="mt-3 text-xs text-gray-500">
-                    Created: {new Date(driver.created_at).toLocaleDateString()} • 
-                    Updated: {new Date(driver.updated_at).toLocaleDateString()}
-                  </div>
-                </div>
-                
-                <div className="flex items-center gap-2 ml-4">
-                  <Button variant="outline" size="sm" asChild>
-                    <a href={`/admin/drivers/${driver.id}`}>
-                      <FileText className="h-4 w-4 mr-1" />
-                      View
-                    </a>
-                  </Button>
-                  <Button variant="outline" size="sm" asChild>
-                    <a href={`/admin/drivers/${driver.id}/edit`}>
-                      <Edit className="h-4 w-4 mr-1" />
-                      Edit
-                    </a>
-                  </Button>
-                  <Button 
-                    variant="outline" 
-                    size="sm" 
-                    onClick={() => handleDelete(driver.id)}
-                    className="text-red-600 hover:text-red-700"
-                  >
-                    <Trash2 className="h-4 w-4 mr-1" />
-                    Delete
-                  </Button>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-        ))}
+                </CardContent>
+              </Card>
+            ))}
           </div>
 
           {/* Pagination */}

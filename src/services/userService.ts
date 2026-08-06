@@ -179,6 +179,35 @@ export class UserService {
   static async updateUser(id: string, updates: UpdateUserInput): Promise<{ data: DatabaseUser | null; error: string | null }> {
     try {
       const updateData: any = { ...updates, updated_at: new Date().toISOString() }
+
+      // An email change has to reach the LOGIN as well as the profile row.
+      // public.users.email is only what the dashboard displays; the credential
+      // lives in auth.users. Updating one without the other left an account whose
+      // shown address no longer signed in — and the login row still holding the
+      // old address, so re-adding that address failed as "already registered".
+      // Done first: if GoTrue rejects the address (already taken), the profile row
+      // is left untouched rather than pointing at an email nobody can log in with.
+      if (typeof updateData.email === 'string' && updateData.email.trim()) {
+        const nextEmail = updateData.email.trim().toLowerCase()
+        updateData.email = nextEmail
+
+        const { data: current } = await supabase
+          .from('users')
+          .select('email, auth_user_id')
+          .eq('id', id)
+          .maybeSingle()
+
+        if (current && current.email?.toLowerCase() !== nextEmail && current.auth_user_id) {
+          const { error: authError } = await supabase.auth.admin.updateUserById(current.auth_user_id, {
+            email: nextEmail,
+            email_confirm: true, // admin-set address; no re-confirmation round trip
+          })
+          if (authError) {
+            return { data: null, error: `Could not change the login email: ${authError.message}` }
+          }
+        }
+      }
+
       const { data, error } = await supabase
         .from('users')
         .update(updateData)

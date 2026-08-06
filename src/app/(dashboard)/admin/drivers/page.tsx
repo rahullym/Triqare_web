@@ -40,6 +40,7 @@ import { useTransportCompanies } from '@/hooks/useTransportCompanies'
 import { useCountries, useStates, useCities } from '@/hooks/useLocations'
 import { useServerPagination } from '@/hooks/useServerPagination'
 import { PaginationWithInfo } from '@/components/ui/pagination'
+import { uploadCsvInChunks } from '@/lib/csv/uploadCsvInChunks'
 
 export default function DriversPage() {
   // Search and filter states
@@ -156,35 +157,23 @@ export default function DriversPage() {
     setCsvUploading(true)
     setCsvResult(null)
 
-    try {
-      const formData = new FormData()
-      formData.append('file', csvFile)
+    // A few rows per request: each driver provisions a login, and a whole file in
+    // one call overran the serverless function timeout — the cut connection was
+    // reported as "Network error" even when rows had imported. See uploadCsvInChunks.
+    const result = await uploadCsvInChunks('/api/drivers/upload-csv', csvFile)
 
-      const response = await fetch('/api/drivers/upload-csv', {
-        method: 'POST',
-        body: formData
-      })
+    setCsvResult(result)
+    setCsvUploading(false)
 
-      const result = await response.json()
-
-      if (response.ok) {
-        setCsvResult({ success: result.success, failed: result.failed, errors: result.errors || [] })
-        if (result.success > 0) {
-          toast.success(`Successfully imported ${result.success} drivers`)
-          refetch()
-        }
-        if (result.failed > 0) {
-          toast.warning(`${result.failed} records failed to import`)
-        }
-      } else {
-        toast.error(result.error || 'Upload failed')
-        setCsvResult({ success: 0, failed: 0, errors: [result.error] })
-      }
-    } catch (error) {
-      toast.error('Failed to upload CSV')
-      setCsvResult({ success: 0, failed: 0, errors: ['Network error'] })
-    } finally {
-      setCsvUploading(false)
+    if (result.success > 0) {
+      toast.success(`Successfully imported ${result.success} drivers`)
+      refetch()
+    }
+    if (result.failed > 0) {
+      toast.warning(`${result.failed} record(s) failed to import`)
+    }
+    if (result.success === 0 && result.failed === 0 && result.errors.length > 0) {
+      toast.error(result.errors[0])
     }
   }
 

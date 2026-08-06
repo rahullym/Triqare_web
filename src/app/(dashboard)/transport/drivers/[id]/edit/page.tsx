@@ -166,8 +166,11 @@ export default function EditDriverPage() {
   const fetchDriver = async () => {
     try {
       setIsLoading(true)
-      const response = await fetch(`/api/transport/drivers/${driverId}?test=true`)
-      
+      // ?test=true asked the API to act as the hard-coded transport.test@example.com
+      // account. The route ignores it in production, but in development it read and
+      // wrote another company's driver — so the flag only ever hid bugs.
+      const response = await fetch(`/api/transport/drivers/${driverId}`)
+
       if (response.ok) {
         const data = await response.json()
         if (data.success && data.data) {
@@ -296,7 +299,7 @@ export default function EditDriverPage() {
     setIsSubmitting(true)
 
     try {
-      const response = await fetch(`/api/transport/drivers/${driverId}?test=true`, {
+      const response = await fetch(`/api/transport/drivers/${driverId}`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',

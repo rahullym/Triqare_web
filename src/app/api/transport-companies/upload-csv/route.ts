@@ -112,21 +112,39 @@ export async function POST(request: NextRequest) {
       )
     }
 
+    // Row window. Provisioning one company costs a GoTrue createUser plus half a
+    // dozen round trips, so a dozen rows in one request ran past the hosting
+    // platform's function timeout: the connection was cut mid-import and the
+    // browser — which cannot read a timed-out response — reported a bare
+    // "Network error" with nothing imported. The client now walks the file a few
+    // rows at a time; each request stays well inside the limit and partial
+    // progress is reported honestly. Absent params = whole file (back-compat).
+    const offset = Math.max(0, Number(formData.get('offset') ?? 0) || 0)
+    const rawLimit = Number(formData.get('limit') ?? 0) || 0
+    const limit = rawLimit > 0 ? rawLimit : parsed.rows.length
+    const rowsToProcess = parsed.rows.slice(offset, offset + limit)
+    const isFirstChunk = offset === 0
+
     const results = {
       success: 0,
       // Seeded with the malformed rows, which never reach the loop below — a file
       // where half the rows had a stray comma otherwise reports "0 failed".
-      failed: parsed.errors.length,
-      errors: [...parsed.errors],
+      // Only on the first chunk, or a chunked upload would report them once per request.
+      failed: isFirstChunk ? parsed.errors.length : 0,
+      errors: isFirstChunk ? [...parsed.errors] : [],
       usersCreated: 0,
-      createdUsers: [] as any[]
+      createdUsers: [] as any[],
+      // Lets the client know how far to walk without parsing the CSV itself.
+      totalRows: parsed.rows.length,
+      processedRows: rowsToProcess.length,
+      nextOffset: offset + rowsToProcess.length
     }
 
     // The existing-user check reads the database, which does not yet know about a
     // row created moments ago in this same upload.
     const seenEmails = new Set<string>()
 
-    for (const { line, values } of parsed.rows) {
+    for (const { line, values } of rowsToProcess) {
       const record = values as unknown as CSVTransportCompany
       try {
         // Validate required fields
