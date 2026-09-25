@@ -72,6 +72,29 @@ export default function EditPatientPage() {
     address_line: ''
   })
 
+  // Hospital picker options. The patient's own selection is appended when the
+  // fetched list does not contain it (list capped/filtered, or the hospital was
+  // added from the mobile app after this page loaded), otherwise the Combobox
+  // silently renders the placeholder and the selection looks empty.
+  const hospitalOptions = (() => {
+    const opts: ComboboxOption[] = (hospitals ?? []).map((hospital) => ({
+      value: hospital.id,
+      label: hospital.name
+    }))
+    const known = new Set(opts.map((o) => o.value))
+    const extras: Array<[string | undefined, string | undefined]> = [
+      [patient?.primary_hospital_id, patient?.primary_hospital_name],
+      [patient?.secondary_hospital_id, patient?.secondary_hospital_name]
+    ]
+    for (const [id, name] of extras) {
+      if (id && !known.has(id)) {
+        opts.push({ value: id, label: name || `Hospital ${id.slice(0, 8)}… (not in list)` })
+        known.add(id)
+      }
+    }
+    return opts
+  })()
+
   // Location hooks
   const { countries } = useCountries()
   const { states } = useStates(formData.country_id || undefined)
@@ -547,10 +570,7 @@ export default function EditPatientPage() {
                   <Combobox
                     options={[
                       { value: "none", label: "No Primary Hospital" },
-                      ...(hospitals?.map((hospital): ComboboxOption => ({
-                        value: hospital.id,
-                        label: hospital.name
-                      })) || [])
+                      ...hospitalOptions
                     ]}
                     value={formData.primary_hospital_id}
                     onValueChange={(value) => handleInputChange('primary_hospital_id', value)}
@@ -565,10 +585,7 @@ export default function EditPatientPage() {
                   <Combobox
                     options={[
                       { value: "none", label: "No Secondary Hospital" },
-                      ...(hospitals?.map((hospital): ComboboxOption => ({
-                        value: hospital.id,
-                        label: hospital.name
-                      })) || [])
+                      ...hospitalOptions
                     ]}
                     value={formData.secondary_hospital_id}
                     onValueChange={(value) => handleInputChange('secondary_hospital_id', value)}

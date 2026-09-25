@@ -25,6 +25,7 @@ import Link from 'next/link'
 import { DatabaseUser } from '@/lib/supabase'
 import { UserTypeBadges } from '@/components/admin/UserTypeBadges'
 import { UserTermsCard } from '@/components/admin/UserTermsCard'
+import { UserPatientProfileCard } from '@/components/admin/UserPatientProfileCard'
 
 interface LinkedPatient {
   id: string
@@ -441,6 +442,9 @@ export default function AdminUserEditPage() {
             </CardContent>
           </Card>
         )}
+
+        {/* Patient profile (hospitals, insurance, emergency contacts) — only renders for patient accounts */}
+        {userId && <UserPatientProfileCard userId={userId} />}
 
         {/* Terms & Conditions status + acceptance history (backend-sourced) */}
         {userId && <UserTermsCard userId={userId} />}
