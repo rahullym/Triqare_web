@@ -9,8 +9,10 @@
  *   3. the build attached to that version
  *   4. a review submission, actually submitted
  *
- * releaseType MANUAL: it passes review and then WAITS for someone to press
- * Release, rather than going live at an unpredictable hour.
+ * releaseType defaults to MANUAL: it passes review and then WAITS for someone
+ * to press Release, rather than going live at an unpredictable hour. Set
+ * RELEASE_TYPE=AFTER_APPROVAL to have it release itself the moment it is
+ * approved.
  *
  * Prints what it finds at each step and stops at the first failure, so a missing
  * prerequisite (screenshots, age rating) is legible rather than a bare 409.
@@ -26,6 +28,7 @@ const APP_ID = '6762559111'
 const VERSION = process.env.VERSION || '2.0.2'
 const BUILD_ID = process.env.BUILD_ID || 'cbbf66b1-eeb7-4c96-ab72-5a8b3827f7c0' // build 6
 const SUBMIT = process.env.SUBMIT !== '0'
+const RELEASE_TYPE = process.env.RELEASE_TYPE || 'MANUAL'
 
 const WHATS_NEW = process.env.WHATS_NEW || `• Emergency contacts can now raise an SOS for the patient they are linked to.
 • The SOS button no longer stays active abroad while your location is still being worked out.
@@ -77,13 +80,13 @@ const errs = (res) =>
     const created = await api('/v1/appStoreVersions', 'POST', {
       data: {
         type: 'appStoreVersions',
-        attributes: { platform: 'IOS', versionString: VERSION, releaseType: 'MANUAL' },
+        attributes: { platform: 'IOS', versionString: VERSION, releaseType: RELEASE_TYPE },
         relationships: { app: { data: { type: 'apps', id: APP_ID } } },
       },
     })
     if (created.status !== 201) return console.log(`✗ create version failed (${created.status}):\n    ${errs(created)}`)
     versionId = created.body.data.id
-    console.log(`✓ created version ${VERSION} (MANUAL release) — ${versionId}`)
+    console.log(`✓ created version ${VERSION} (${RELEASE_TYPE} release) — ${versionId}`)
   }
 
   // 2. What's New --------------------------------------------------------------

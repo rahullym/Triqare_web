@@ -18,7 +18,14 @@ interface ProfileResponse {
   }[]
   user: Record<string, string | null> | null
   patient: Record<string, string | number | boolean | null> | null
-  emergencyContacts: { id: string; name: string; relationship: string | null; phone: string; is_primary: boolean }[]
+  emergencyContacts: {
+    id: string
+    name: string
+    relationship: string | null
+    phone: string | null
+    email: string | null
+    is_primary?: boolean
+  }[]
 }
 
 /**
@@ -113,7 +120,17 @@ export default function HospitalPatientProfilePage({
   return (
     <div className="space-y-6">
       <header className="flex flex-wrap items-start justify-between gap-4">
-        <div>
+        <div className="flex items-start gap-4">
+          {/* The app stores the photo as a data URI on users.avatar_url. */}
+          {u?.avatar_url ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              src={u.avatar_url as string}
+              alt={`Photo of ${name}`}
+              className="mt-6 h-16 w-16 shrink-0 rounded-full object-cover ring-2 ring-white"
+            />
+          ) : null}
+          <div>
           <Link href="/hospital/patients" className="text-sm text-neutral-500 hover:underline">
             ← Registered Patients
           </Link>
@@ -129,6 +146,7 @@ export default function HospitalPatientProfilePage({
                 INACTIVE
               </span>
             )}
+          </div>
           </div>
         </div>
       </header>
@@ -208,11 +226,11 @@ export default function HospitalPatientProfilePage({
               {data.emergencyContacts.map((c, i) => (
                 <li key={c.id}>
                   <p className="text-xs font-medium uppercase tracking-wide text-neutral-400">
-                    {c.is_primary || i === 0 ? 'Primary' : 'Secondary'}
+                    {c.is_primary || i === 0 ? 'Primary' : `Contact ${i + 1}`}
                   </p>
                   <p className="text-sm font-medium text-neutral-800">{c.name}</p>
                   <p className="text-sm text-neutral-600">
-                    {c.relationship || 'Relationship not provided'} · {c.phone}
+                    {[c.relationship || 'Relationship not provided', c.phone, c.email].filter(Boolean).join(' · ')}
                   </p>
                 </li>
               ))}

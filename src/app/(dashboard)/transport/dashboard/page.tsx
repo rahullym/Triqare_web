@@ -35,6 +35,9 @@ import {
 } from '@/lib/driverPresence'
 import Link from 'next/link'
 
+// Fallback refresh cadence while the tab is visible; Realtime normally wins.
+const LIVE_POLL_MS = 15_000
+
 interface Driver {
   user_id: string
   transport_company_id: string
@@ -217,8 +220,22 @@ export default function TransportDashboardPage() {
       .on('postgres_changes', { event: '*', schema: 'public', table: 'sos_requests' }, bump)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'sos_request_assigned' }, bump)
       .subscribe()
+    // Realtime alone is not enough: a driver signing into the app changes
+    // device_tokens, which anon cannot read so no event ever arrives, and a table
+    // missing from the supabase_realtime publication is silent (see
+    // migrations/99_updates/transport_realtime_publication.sql). Poll while the
+    // tab is visible and refresh as soon as it becomes visible again.
+    const poll = setInterval(() => {
+      if (document.visibilityState === 'visible') refreshRef.current()
+    }, LIVE_POLL_MS)
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') refreshRef.current()
+    }
+    document.addEventListener('visibilitychange', onVisible)
     return () => {
       if (timer) clearTimeout(timer)
+      clearInterval(poll)
+      document.removeEventListener('visibilitychange', onVisible)
       supabase.removeChannel(channel)
     }
   }, [])

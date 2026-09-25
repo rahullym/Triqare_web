@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getAuthedUser } from '@/lib/supabase/server'
+import { createServerClient, getAuthedUser } from '@/lib/supabase/server'
 import { UserService } from '@/services/userService'
 import { TransportCompanyService } from '@/services/transportCompanyService'
 import { supabase } from '@/lib/supabase'
@@ -157,14 +157,33 @@ export async function DELETE(
       return NextResponse.json({ error: 'Access denied. Driver does not belong to your company.' }, { status: 403 })
     }
 
-    // Delete the driver (this will also delete the associated user due to CASCADE)
-    const { error: deleteError } = await supabase
-      .from('drivers')
-      .delete()
-      .eq('user_id', driverId)
+    // The cascade runs users -> drivers, not the other way: deleting only the
+    // drivers row left the users row (still Active, still counted on Admin > All
+    // Users) and its login behind. Delete the account itself instead.
+    //
+    // sos_requests.driver_id references users(id), so a driver with trips on
+    // record cannot be removed without touching patients' SOS history. Refuse
+    // that case and point at Deactivate, before anything is deleted.
+    const { count: tripCount, error: tripError } = await createServerClient()
+      .from('sos_requests')
+      .select('id', { count: 'exact', head: true })
+      .eq('driver_id', driverId)
 
-    if (deleteError) {
+    if (tripError) {
       return NextResponse.json({ error: 'Failed to delete driver' }, { status: 500 })
+    }
+    if (tripCount) {
+      return NextResponse.json(
+        {
+          error: `This driver has ${tripCount} trip${tripCount === 1 ? '' : 's'} on record and can't be deleted. Deactivate them instead.`,
+        },
+        { status: 409 }
+      )
+    }
+
+    const { success, error: deleteError } = await UserService.deleteUser(driverId)
+    if (!success) {
+      return NextResponse.json({ error: deleteError || 'Failed to delete driver' }, { status: 500 })
     }
 
     return NextResponse.json({

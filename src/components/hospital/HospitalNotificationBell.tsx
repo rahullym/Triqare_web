@@ -1,6 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { useChime } from '@/hooks/useChime'
 import { useHospitalRealtime } from '@/hooks/useHospitalRealtime'
 import { useHospital } from './HospitalContext'
 
@@ -28,14 +29,23 @@ export function HospitalNotificationBell() {
   const [items, setItems] = useState<HospitalNotification[]>([])
   const [unread, setUnread] = useState(0)
   const panelRef = useRef<HTMLDivElement>(null)
+  const { play, blocked } = useChime()
+  // Ids already on screen. null until the first load, so opening the dashboard
+  // does not chime for the backlog.
+  const seen = useRef<Set<string> | null>(null)
 
   const load = useCallback(async () => {
     const res = await fetch('/api/hospital/notifications')
     if (!res.ok) return
     const data = await res.json()
-    setItems(data.notifications ?? [])
+    const list: HospitalNotification[] = data.notifications ?? []
+    // SOS notifications are left to the beacon, which already sounds the siren.
+    const fresh = list.some((n) => !n.read_at && n.type !== 'SOS' && seen.current && !seen.current.has(n.id))
+    seen.current = new Set(list.map((n) => n.id))
+    if (fresh) play()
+    setItems(list)
     setUnread(data.unread ?? 0)
-  }, [])
+  }, [play])
 
   useEffect(() => {
     if (hospital) void load()
@@ -72,6 +82,11 @@ export function HospitalNotificationBell() {
         className="relative rounded-lg p-2 text-neutral-600 hover:bg-neutral-100"
       >
         <span aria-hidden className="text-lg">🔔</span>
+        {blocked && (
+          <span className="absolute -bottom-1 -right-1 text-[10px]" title="Click anywhere on the page to enable notification sound">
+            🔇
+          </span>
+        )}
         {unread > 0 && (
           <span className="absolute -right-0.5 -top-0.5 inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-[#cc3333] px-1 text-[11px] font-bold text-white">
             {unread > 99 ? '99+' : unread}

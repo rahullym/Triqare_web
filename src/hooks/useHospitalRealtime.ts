@@ -34,7 +34,15 @@ interface Options {
  * The server-side filter is defence in depth. RLS already restricts rows to the
  * caller's hospital; the filter keeps the socket quiet rather than being the
  * thing that enforces isolation.
+ *
+ * 3. A poll backs the socket up. A channel can report SUBSCRIBED and still
+ *    deliver nothing (table missing from the supabase_realtime publication, or
+ *    RLS evaluating the socket as anon), and that failure looks exactly like a
+ *    quiet ward. Every caller just re-fetches on change, so onChange also fires
+ *    every POLL_MS while the tab is visible and whenever it regains focus.
  */
+const POLL_MS = 10_000
+
 export function useHospitalRealtime(table: Table, hospitalId: string | null, options: Options = {}) {
   const { onChange, enabled = true } = options
   const [connected, setConnected] = useState(false)
@@ -50,7 +58,11 @@ export function useHospitalRealtime(table: Table, hospitalId: string | null, opt
     let attempt = 0
     let disposed = false
 
-    const connect = () => {
+    const connect = async () => {
+      if (disposed) return
+      // Bind the signed-in user's token to the socket before joining, so RLS
+      // on the hospital_* tables evaluates this channel as that user.
+      await supabase.realtime.setAuth().catch(() => undefined)
       if (disposed) return
       channel = supabase
         .channel(`${table}:${hospitalId}:${attempt}`)
@@ -79,16 +91,26 @@ export function useHospitalRealtime(table: Table, hospitalId: string | null, opt
             retry = setTimeout(() => {
               retry = null
               if (channel) supabase.removeChannel(channel)
-              connect()
+              void connect()
             }, delay)
           }
         })
     }
 
-    connect()
+    void connect()
+
+    const poll = () => {
+      if (document.visibilityState === 'visible') handler.current?.({ eventType: 'POLL', new: null })
+    }
+    const timer = window.setInterval(poll, POLL_MS)
+    window.addEventListener('focus', poll)
+    document.addEventListener('visibilitychange', poll)
 
     return () => {
       disposed = true
+      window.clearInterval(timer)
+      window.removeEventListener('focus', poll)
+      document.removeEventListener('visibilitychange', poll)
       if (retry) clearTimeout(retry)
       if (channel) supabase.removeChannel(channel)
       setConnected(false)

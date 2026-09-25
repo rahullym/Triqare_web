@@ -15,14 +15,16 @@
 // Sender domain MUST be verified in Resend. triqare.com is verified; triqare.in
 // is not, and store review already rejected a build over that dead domain.
 const FROM = process.env.HOSPITAL_EMAIL_FROM || 'QSOS by Triqare <noreply@triqare.com>'
-const SUPPORT = 'support@triqare.com'
+const SUPPORT = 'info@triqare.com'
+const SUPPORT_PHONE = '+91 93249 11500'
+const SUPPORT_PHONE_TEL = '+919324911500'
 
 /**
- * Base URL for the portal. OQ-003 is unresolved (portal.triqare.com/hospital vs
- * hospital.triqare.com), so both halves are configurable and nothing about the
- * final address is baked into this file.
+ * Base URL for the portal. Deliberately NOT NEXT_PUBLIC_APP_URL: on Netlify that
+ * is the raw triqareweb20.netlify.app host, which put an unbranded address in
+ * front of hospitals. portal.triqare.com is the primary domain on the same site.
  */
-const APP_URL = process.env.NEXT_PUBLIC_APP_URL || 'https://staging.triqare.com'
+const APP_URL = process.env.HOSPITAL_PORTAL_BASE_URL || 'https://portal.triqare.com'
 const PORTAL_PATH = process.env.NEXT_PUBLIC_HOSPITAL_PORTAL_PATH || '/hospital'
 
 export function hospitalPortalUrl(): string {
@@ -77,9 +79,9 @@ Temporary Password: ${temporaryPassword}
 
 Set up your dashboard: ${setupUrl}
 
-This link is valid for ${expiryHours} hours. After it expires, contact ${SUPPORT} and we will send you a new one.
+This link is valid for ${expiryHours} hours. After it expires, contact ${SUPPORT} or call ${SUPPORT_PHONE} and we will send you a new one.
 
-Triqare Healthtech Private Limited │ Vikhroli West, Mumbai │ ${SUPPORT}`
+Triqare Healthtech Private Limited │ Vikhroli West, Mumbai │ ${SUPPORT} │ ${SUPPORT_PHONE}`
 
   const html = `<!doctype html><html><body style="margin:0;background:#f5f5f5;font-family:Arial,Helvetica,sans-serif;color:#1a1a1a">
   <div style="max-width:560px;margin:0 auto;background:#ffffff">
@@ -96,10 +98,10 @@ Triqare Healthtech Private Limited │ Vikhroli West, Mumbai │ ${SUPPORT}`
       <p style="margin:0 0 24px;text-align:center">
         <a href="${esc(setupUrl)}" style="display:inline-block;background:#003366;color:#ffffff;text-decoration:none;padding:13px 28px;border-radius:6px;font-weight:bold">Set Up My Dashboard</a>
       </p>
-      <p style="margin:0;color:#667;font-size:13px">This link is valid for <strong>${expiryHours} hours</strong>. After it expires, contact <a href="mailto:${SUPPORT}" style="color:#cc3333">${SUPPORT}</a> and we will send you a new one.</p>
+      <p style="margin:0;color:#667;font-size:13px">This link is valid for <strong>${expiryHours} hours</strong>. After it expires, contact <a href="mailto:${SUPPORT}" style="color:#cc3333">${SUPPORT}</a> or call <a href="tel:${SUPPORT_PHONE_TEL}" style="color:#cc3333">${SUPPORT_PHONE}</a> and we will send you a new one.</p>
     </div>
     <div style="padding:16px 24px;border-top:1px solid #e6e6e6;color:#999999;font-size:12px">
-      Triqare Healthtech Private Limited │ Vikhroli West, Mumbai │ <a href="mailto:${SUPPORT}" style="color:#cc3333">${SUPPORT}</a>
+      Triqare Healthtech Private Limited │ Vikhroli West, Mumbai │ <a href="mailto:${SUPPORT}" style="color:#cc3333">${SUPPORT}</a> │ <a href="tel:${SUPPORT_PHONE_TEL}" style="color:#cc3333">${SUPPORT_PHONE}</a>
     </div>
   </div></body></html>`
 
