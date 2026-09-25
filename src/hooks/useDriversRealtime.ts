@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { supabase } from '@/lib/supabase'
 import { Driver, DriverFilters } from '@/services/driverService'
 import { RealtimeChannel, RealtimePostgresChangesPayload } from '@supabase/supabase-js'
@@ -8,7 +8,12 @@ interface UseDriversRealtimeOptions {
   onInsert?: (driver: any) => void
   onUpdate?: (driver: any) => void
   onDelete?: (driverId: string) => void
+  /** Called after every background refresh (Realtime event, poll, tab refocus). */
+  onRefresh?: () => void
 }
+
+// Fallback refresh cadence while the tab is visible; Realtime normally wins.
+const LIVE_POLL_MS = 15_000
 
 /**
  * Hook for fetching drivers with real-time updates via Supabase Realtime
@@ -27,7 +32,7 @@ export function useDriversRealtime(
   filters: DriverFilters = {},
   options: UseDriversRealtimeOptions = {}
 ) {
-  const { enabled = true, onInsert, onUpdate, onDelete } = options
+  const { enabled = true, onInsert, onUpdate, onDelete, onRefresh } = options
 
   const [drivers, setDrivers] = useState<Driver[]>([])
   const [loading, setLoading] = useState(true)
@@ -36,9 +41,10 @@ export function useDriversRealtime(
   const [isConnected, setIsConnected] = useState(false)
 
   // Fetch drivers from API
-  const fetchDrivers = useCallback(async () => {
+  // `silent` refreshes keep the current rows on screen instead of flashing "Loading...".
+  const fetchDrivers = useCallback(async (silent = false) => {
     try {
-      setLoading(true)
+      if (!silent) setLoading(true)
       setError(null)
 
       const params = new URLSearchParams()
@@ -119,6 +125,33 @@ export function useDriversRealtime(
     fetchDrivers()
   }, [fetchDrivers])
 
+  // The subscription below is set up once, so it must read the CURRENT filters
+  // and callbacks through refs — capturing fetchDrivers directly re-fetched the
+  // first render's page and filters forever.
+  const backgroundRefreshRef = useRef<() => void>(() => {})
+  backgroundRefreshRef.current = () => {
+    fetchDrivers(true)
+    onRefresh?.()
+  }
+
+  // `drivers` is missing from the supabase_realtime publication on live (see
+  // migrations/99_updates/transport_realtime_publication.sql), so its events
+  // never arrive, and duty also depends on device_tokens, which anon Realtime
+  // can't see at all. Poll while the tab is visible and refresh as soon as it
+  // becomes visible again.
+  useEffect(() => {
+    if (!enabled) return
+    const refreshIfVisible = () => {
+      if (document.visibilityState === 'visible') backgroundRefreshRef.current()
+    }
+    const poll = setInterval(refreshIfVisible, LIVE_POLL_MS)
+    document.addEventListener('visibilitychange', refreshIfVisible)
+    return () => {
+      clearInterval(poll)
+      document.removeEventListener('visibilitychange', refreshIfVisible)
+    }
+  }, [enabled])
+
   // Setup realtime subscription (separate from data fetching)
   useEffect(() => {
     if (!enabled) {
@@ -145,7 +178,7 @@ export function useDriversRealtime(
           },
           (payload: RealtimePostgresChangesPayload<any>) => {
             console.log('➕ Driver INSERT event:', payload)
-            fetchDrivers()
+            backgroundRefreshRef.current()
             if (onInsert) onInsert(payload.new)
           }
         )
@@ -158,7 +191,7 @@ export function useDriversRealtime(
           },
           (payload: RealtimePostgresChangesPayload<any>) => {
             console.log('🔄 Driver UPDATE event:', payload)
-            fetchDrivers()
+            backgroundRefreshRef.current()
             if (onUpdate) onUpdate(payload.new)
           }
         )
@@ -177,6 +210,7 @@ export function useDriversRealtime(
               setCount(prev => Math.max(0, prev - 1))
               if (onDelete) onDelete(deletedUserId)
             }
+            backgroundRefreshRef.current()
           }
         )
         .subscribe((status, err) => {
@@ -212,7 +246,7 @@ export function useDriversRealtime(
           (payload) => {
             console.log('🚨 SOS Request event (affects driver status):', payload.eventType)
             // Refetch drivers to update busy/available status
-            fetchDrivers()
+            backgroundRefreshRef.current()
           }
         )
         .subscribe((status, err) => {

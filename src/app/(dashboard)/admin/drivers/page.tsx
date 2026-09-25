@@ -99,14 +99,22 @@ export default function DriversPage() {
     offset: (currentPage - 1) * pageSize
   }), [searchQuery, statusFilter, companyFilter, verificationFilter, countryFilter, stateFilter, cityFilter, currentPage, pageSize])
 
+  // The tiles come from their own endpoint, so every list refresh must refresh
+  // them too — otherwise Total Drivers still read 31 after a delete until reload.
+  const { stats, loading: statsLoading, refetch: refetchStats } = useDriverStats()
+
   // Use realtime hook for live updates
-  const { drivers, loading, error, count, refetch, isConnected } = useDriversRealtime(filters, {
+  const { drivers, loading, error, count, refetch: refetchDrivers, isConnected } = useDriversRealtime(filters, {
     enabled: true,
     onUpdate: (driver) => {
       toast.info(`Driver ${driver.user?.full_name || 'record'} was updated`)
-    }
+    },
+    onRefresh: () => refetchStats(true)
   })
-  const { stats, loading: statsLoading } = useDriverStats()
+  const refetch = () => {
+    refetchDrivers()
+    refetchStats(true)
+  }
   const { deleteDriver, loading: deleteLoading } = useDeleteDriver()
 
   // Pagination calculations

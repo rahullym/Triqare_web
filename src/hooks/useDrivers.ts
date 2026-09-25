@@ -296,9 +296,10 @@ export function useDriverStats() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
-  const fetchStats = useCallback(async () => {
+  // `silent` refreshes keep the current tiles on screen instead of blanking them.
+  const fetchStats = useCallback(async (silent = false) => {
     try {
-      setLoading(true)
+      if (!silent) setLoading(true)
       setError(null)
 
       const response = await fetch('/api/drivers/stats')
@@ -321,8 +322,8 @@ export function useDriverStats() {
     fetchStats()
   }, [fetchStats])
 
-  const refetch = useCallback(() => {
-    fetchStats()
+  const refetch = useCallback((silent = false) => {
+    fetchStats(silent)
   }, [fetchStats])
 
   return {
