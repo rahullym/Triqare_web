@@ -3,6 +3,7 @@ import { DriverService, type DriverDutyFilter } from '@/services/driverService'
 import { requireAdmin } from '@/lib/auth/requireAdmin'
 import { requireRole, STAFF_ROLES } from '@/lib/auth/requireRole'
 import { blankToNull, LOCATION_FK_FIELDS } from '@/lib/blankToNull'
+import { createServiceRoleClient } from '@/lib/supabase/server'
 
 const DUTY_FILTERS = new Set<string>(['on_trip', 'on_duty', 'needs_attention', 'off_duty'])
 
@@ -112,7 +113,39 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    // The add form also offers plain 'patient' accounts (anyone created under
+    // Users, or who signed up in the app, starts as patient). Staff accounts
+    // must never be turned into drivers.
+    const admin = createServiceRoleClient()
+    const { data: targetUser } = await admin
+      .from('users')
+      .select('id, role')
+      .eq('id', body.user_id)
+      .maybeSingle()
+    if (!targetUser) {
+      return NextResponse.json({ error: 'That user no longer exists.', success: false }, { status: 400 })
+    }
+    if (targetUser.role !== 'driver' && targetUser.role !== 'patient') {
+      return NextResponse.json(
+        { error: `That account is a ${targetUser.role} account and cannot be made a driver.`, success: false },
+        { status: 400 }
+      )
+    }
+
     const driver = await DriverService.createDriver(body)
+
+    // The mobile app routes on users.role, so a driver profile on a patient
+    // account would still open the patient app.
+    if (targetUser.role !== 'driver') {
+      const { error: roleError } = await admin.from('users').update({ role: 'driver' }).eq('id', targetUser.id)
+      if (roleError) {
+        await admin.from('drivers').delete().eq('user_id', targetUser.id)
+        return NextResponse.json(
+          { error: `Could not set the driver role on that account: ${roleError.message}`, success: false },
+          { status: 500 }
+        )
+      }
+    }
 
     return NextResponse.json({
       driver,

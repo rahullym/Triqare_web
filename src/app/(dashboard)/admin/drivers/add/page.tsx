@@ -80,8 +80,14 @@ export default function AddDriverPage() {
   const { cities } = useCities(formData.state_id || undefined)
   const { pincodes } = usePincodes(formData.city_id || undefined)
   
-  // Users hook for driver role
-  const { users: driverUsers, loading: usersLoading } = useUsersByRole('driver')
+  // Driver-role accounts, plus patient accounts: anyone created under Users or
+  // who signed up in the app starts as 'patient', and saving the driver profile
+  // promotes them (see POST /api/drivers). Listing only 'driver' hid them, while
+  // "Create a new login" refused their email as already registered.
+  const { users: driverRoleUsers, loading: driverUsersLoading } = useUsersByRole('driver')
+  const { users: patientUsers, loading: patientUsersLoading } = useUsersByRole('patient')
+  const usersLoading = driverUsersLoading || patientUsersLoading
+  const driverUsers = [...driverRoleUsers, ...patientUsers]
   // drivers is keyed by user_id, so an account that already has a driver profile
   // cannot take a second one — offering it only produces a duplicate-key error
   // once the form has been filled in.
@@ -292,7 +298,9 @@ export default function AddDriverPage() {
                 <Combobox
                   options={availableUsers.map(user => ({
                     value: user.id,
-                    label: `${user.full_name} (${user.email})`
+                    label: user.role === 'driver'
+                      ? `${user.full_name} (${user.email})`
+                      : `${user.full_name} (${user.email}) · patient account, becomes driver`
                   }))}
                   value={formData.user_id}
                   onValueChange={(value) => handleInputChange('user_id', value)}
@@ -305,13 +313,13 @@ export default function AddDriverPage() {
                 {usersLoading && (
                   <p className="text-sm text-gray-500 mt-1">
                     <Loader2 className="h-4 w-4 animate-spin inline mr-1" />
-                    Loading driver users...
+                    Loading users...
                   </p>
                 )}
                 {!usersLoading && availableUsers.length === 0 && (
                   <p className="text-sm text-amber-600 mt-1">
                     <AlertCircle className="h-4 w-4 inline mr-1" />
-                    No unassigned driver accounts. Use &quot;Create a new login&quot; above.
+                    No unassigned accounts. Use &quot;Create a new login&quot; above.
                   </p>
                 )}
               </div>
